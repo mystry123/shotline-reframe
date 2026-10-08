@@ -20,6 +20,7 @@ Environment:
     REFRAME_WORKERS         analyses run at the same time (default 1)
     REFRAME_MAX_BYTES       largest video accepted (default 4 GB)
     REFRAME_CACHE_DAYS      how long analyses are kept (default 14)
+    REFRAME_DIRECTOR …      AI director settings (see reframe/director.py)
 """
 
 from __future__ import annotations
@@ -42,7 +43,8 @@ import httpx
 from fastapi import FastAPI, Header, HTTPException
 from pydantic import BaseModel, Field
 
-from .engine import ENGINE_VERSION, Analysis, analyze, plan
+from . import director
+from .engine import ENGINE_VERSION, Analysis, analyze, parse_ratio, plan, shot_options
 from .options import OUTPUT_HEIGHTS, QUALITY, ZOOM, Options
 
 TOKEN = os.environ.get("REFRAME_SERVICE_TOKEN", "")
@@ -79,6 +81,7 @@ class PlanRequest(BaseModel):
     zoom: str = "balanced"
     keepText: list[str] = Field(default_factory=list)
     outputHeight: int = 1080
+    director: bool = True       # let the AI director pick framings (when configured)
 
 
 def _auth(token: str | None) -> None:
@@ -174,9 +177,27 @@ def _load(analysis_id: str) -> Analysis | None:
     return result
 
 
+def _directed(analysis_id: str, result: Analysis, ratio: str, options: Options) -> dict:
+    """The AI director's picks for this analysis and shape, cached on disk
+    (only successful runs are cached; failures are retried next time)."""
+    key = hashlib.sha256(f"{analysis_id}|{ratio}|{options.zoom}|{options.output_height}|"
+                         f"{director.model_id()}|{director.PROMPT_VERSION}".encode()).hexdigest()[:32]
+    path = CACHE_DIR / "director" / f"{key}.json"
+    if path.exists():
+        summary = json.loads(path.read_text())
+        summary["choices"] = {int(k): v for k, v in summary["choices"].items()}
+        summary["cached"] = True
+        return summary
+    summary = director.direct(result, shot_options(result, ratio, options), parse_ratio(ratio))
+    if summary.get("used"):
+        path.parent.mkdir(exist_ok=True)
+        path.write_text(json.dumps(summary))
+    return summary
+
+
 def _cleanup() -> None:
     cutoff = time.time() - CACHE_DAYS * 86400
-    for p in CACHE_DIR.glob("*.pkl"):
+    for p in [*CACHE_DIR.glob("*.pkl"), *CACHE_DIR.glob("director/*.json")]:
         if p.stat().st_mtime < cutoff:
             p.unlink(missing_ok=True)
 
@@ -192,7 +213,8 @@ _cleanup()
 def health() -> dict:
     with _lock:
         running = sum(1 for j in _jobs.values() if j.get("status") in ("queued", "running"))
-    return {"status": "ok", "engine": ENGINE_VERSION, "running": running, "workers": WORKERS}
+    return {"status": "ok", "engine": ENGINE_VERSION, "running": running, "workers": WORKERS,
+            "director": director.model_id() if director.configured() else None}
 
 
 @app.post("/analyses", status_code=202)
@@ -249,5 +271,8 @@ def plan_analysis(analysis_id: str, req: PlanRequest, x_internal_token: str | No
     result = _load(analysis_id)
     if result is None:
         raise HTTPException(409, "The analysis isn't finished (or has expired)")
-    return plan(result, req.ratio, keep_text=req.keepText,
-                options=Options(quality=result.quality, output_height=req.outputHeight, zoom=req.zoom))
+    options = Options(quality=result.quality, output_height=req.outputHeight, zoom=req.zoom)
+    summary = _directed(analysis_id, result, req.ratio, options) if req.director and director.configured() else None
+    return plan(result, req.ratio, keep_text=req.keepText, options=options,
+                choices=summary["choices"] if summary else None,
+                director={k: v for k, v in summary.items() if k != "choices"} if summary else None)

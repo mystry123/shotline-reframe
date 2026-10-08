@@ -198,11 +198,149 @@ def _speaker_runs(shot: Shot, a: Track, b: Track, speaking: "callable") -> list[
 
 
 def plan_shot(shot: Shot, tracks: list[Track], target_aspect: float, pic_aspect: float,
-              fps: float, min_crop_h: float, speaking: "callable | None" = None) -> list[Segment]:
+              fps: float, min_crop_h: float, speaking: "callable | None" = None,
+              captions: "tuple[float, float, float, float] | None" = None) -> list[Segment]:
     """Segments for one shot. `speaking(t)` returns the track speaking at time t
-    (from the transcript), or None."""
+    (from the transcript), or None. `captions`: box (x0, y0, x1, y1) of
+    burned-in captions/titles that must stay in frame."""
+    people = [t for t in tracks if t.is_person]
+    if len(people) == 1 and abs(target_aspect / pic_aspect - 1) >= 0.03:
+        return [_single_person(shot, people[0], target_aspect, pic_aspect, fps, min_crop_h, captions)]
     seg = _plan_shot(shot, tracks, target_aspect, pic_aspect, fps, min_crop_h, speaking)
     return seg if isinstance(seg, list) else [seg]
+
+
+# ---------------------------------------------------------------------------
+# One person: what must stay in frame, and how to fit it
+# ---------------------------------------------------------------------------
+
+KEEP_MARGIN = 0.03
+FIT_WHEN_COVERS = 0.85   # must-keep area this big (share of the picture's height and width): show it all
+
+
+# How much of the person to keep, in face widths/heights around the face:
+# PREFERRED is head to chest with the shoulders; CORE is the least a crop may
+# show (head, neck and the top of the shoulders). Captions are always kept.
+PREFERRED = (1.3, 0.6, 3.0)   # each side, above, below
+CORE = (0.8, 0.4, 2.0)
+
+
+def _must_keep(person: Track, captions, spread=PREFERRED) -> tuple[float, float, float, float]:
+    """The area around the person (plus burned-in captions) that must stay in frame."""
+    cx, y, w, h = person.median("cx"), person.median("y"), person.median("w"), person.median("h")
+    side, above, below = spread
+    x0, x1 = cx - side * w, cx + side * w
+    y0, y1 = y - above * h, y + below * h
+    if captions:
+        x0, y0 = min(x0, captions[0]), min(y0, captions[1])
+        x1, y1 = max(x1, captions[2]), max(y1, captions[3])
+    return max(0.0, x0 - KEEP_MARGIN), max(0.0, y0 - KEEP_MARGIN), min(1.0, x1 + KEEP_MARGIN), min(1.0, y1 + KEEP_MARGIN)
+
+
+def _single_person(shot: Shot, p: Track, target_aspect: float, pic_aspect: float, fps: float,
+                   min_crop_h: float, captions) -> Segment:
+    kx0, ky0, kx1, ky1 = _must_keep(p, captions)
+    max_w, max_h = _crop_for_target(target_aspect, pic_aspect)
+    keep_w, keep_h = kx1 - kx0, ky1 - ky0
+    if keep_w > max_w or keep_h > max_h:
+        # The preferred area doesn't fit; a crop is still fine if the core does
+        # (a little less shoulder beats shrinking the person over a blur).
+        cx0, cy0, cx1, cy1 = _must_keep(p, captions, CORE)
+        if cx1 - cx0 <= max_w and cy1 - cy0 <= max_h:
+            kx0, ky0, kx1, ky1 = cx0, cy0, cx1, cy1
+            keep_w, keep_h = kx1 - kx0, ky1 - ky0
+
+    if keep_w <= max_w and keep_h <= max_h:
+        # Fits in a crop of the target shape: follow the person, never cutting
+        # the must-keep area.
+        w, h = _crop_size(target_aspect, pic_aspect, p.median("h"), FACE_FRACTION_SINGLE, min_crop_h)
+        if w < keep_w or h < keep_h:
+            grow = max(keep_w / w, keep_h / h)
+            w, h = min(max_w, w * grow), min(max_h, h * grow)
+        kfs = _follow(shot, [p], w, h, fps)
+        for k in kfs:
+            k.x = float(np.clip(k.x, max(0.0, kx1 - w), min(kx0, 1 - w)))
+            k.y = float(np.clip(k.y, max(0.0, ky1 - h), min(ky0, 1 - h)))
+        reason = "one person" + (" and their captions" if captions else "")
+        return Segment(shot.start, shot.end, "single", [Zone((0, 0, 1, 1), kfs, f"track {p.track_id}")], reason)
+
+    if keep_w >= FIT_WHEN_COVERS and keep_h >= FIT_WHEN_COVERS:
+        return _fit_segment(shot, "the person and their captions fill the picture")
+
+    # Too tall (or wide) for the target shape: show the must-keep area whole,
+    # over a blurred copy of the picture (portrait video going to 16:9).
+    return _framed_segment(shot, p, (kx0, ky0, kx1, ky1), target_aspect, pic_aspect,
+                           "the person" + (" and their captions" if captions else "") + " don't fit the shape: shown whole over a blurred background")
+
+
+def _framed_segment(shot: Shot, p: Track, box, target_aspect: float, pic_aspect: float, reason: str) -> Segment:
+    """`box` (x0, y0, x1, y1) shown whole, centred over a blurred copy of the picture."""
+    kx0, ky0, kx1, ky1 = box
+    keep_w, keep_h = kx1 - kx0, ky1 - ky0
+    region_aspect = (keep_w * pic_aspect) / keep_h          # pixels
+    if region_aspect < target_aspect:
+        cw, ch = region_aspect / target_aspect, 1.0
+    else:
+        cw, ch = 1.0, target_aspect / region_aspect
+    canvas = ((1 - cw) / 2, (1 - ch) / 2, cw, ch)
+    kfs = [Keyframe(shot.start, kx0, ky0, keep_w, keep_h), Keyframe(shot.end, kx0, ky0, keep_w, keep_h)]
+    return Segment(shot.start, shot.end, "framed", [Zone(canvas, kfs, f"track {p.track_id}")], reason)
+
+
+# ---------------------------------------------------------------------------
+# Alternatives for the AI director: other reasonable framings of a shot
+# ---------------------------------------------------------------------------
+
+def _same_framing(a: list[Segment], b: list[Segment]) -> bool:
+    if len(a) != len(b):
+        return False
+    for x, y in zip(a, b):
+        if x.layout != y.layout or len(x.zones) != len(y.zones):
+            return False
+        for zx, zy in zip(x.zones, y.zones):
+            kx, ky = zx.keyframes[0], zy.keyframes[0]
+            if max(abs(kx.x - ky.x), abs(kx.y - ky.y), abs(kx.w - ky.w), abs(kx.h - ky.h)) > 0.05:
+                return False
+    return True
+
+
+def shot_alternatives(shot: Shot, tracks: list[Track], rules: list[Segment], target_aspect: float,
+                      pic_aspect: float, fps: float, min_crop_h: float, captions=None) -> dict[str, list[Segment]]:
+    """Named framings of a shot, starting with the rules' choice ("rules").
+    Near-duplicates are left out, so a shot may have only one."""
+    out: dict[str, list[Segment]] = {"rules": rules}
+
+    def add(name: str, segs: list[Segment]) -> None:
+        if not any(_same_framing(segs, v) for v in out.values()):
+            out[name] = segs
+
+    if abs(target_aspect / pic_aspect - 1) < 0.03:
+        return out
+    people = [t for t in tracks if t.is_person]
+    if len(people) == 1:
+        p = people[0]
+        tag = f"track {p.track_id}"
+        max_w, max_h = _crop_for_target(target_aspect, pic_aspect)
+        # Close: a medium close-up following the face (may cut captions).
+        w, h = _crop_size(target_aspect, pic_aspect, p.median("h"), FACE_FRACTION_SINGLE, min_crop_h)
+        add("close", [Segment(shot.start, shot.end, "single", [Zone((0, 0, 1, 1), _follow(shot, [p], w, h, fps), tag)],
+                              "close-up on the person")])
+        # Medium: the biggest crop of the target shape, on the person, keeping captions when they fit.
+        # Never at the cost of the face: captions are kept only if they fit together with it.
+        kfs = _follow(shot, [p], max_w, max_h, fps)
+        kx0, ky0, kx1, ky1 = _must_keep(p, captions, CORE)
+        if kx1 - kx0 <= max_w and ky1 - ky0 <= max_h:
+            for k in kfs:
+                k.x = float(np.clip(k.x, max(0.0, kx1 - max_w), min(kx0, 1 - max_w)))
+                k.y = float(np.clip(k.y, max(0.0, ky1 - max_h), min(ky0, 1 - max_h)))
+        add("medium", [Segment(shot.start, shot.end, "single", [Zone((0, 0, 1, 1), kfs, tag)], "as close as the shape allows")])
+        # Whole: head, shoulders and captions shown whole over a blurred
+        # background, as big as they can be (tighter than showing the whole picture).
+        for name, spread in (("whole", CORE), ("whole-wide", PREFERRED)):
+            add(name, [_framed_segment(shot, p, _must_keep(p, captions, spread), target_aspect, pic_aspect,
+                                       "the person shown whole over a blurred background")])
+    add("wide", [_fit_segment(shot, "the whole picture")])
+    return out
 
 
 def _plan_shot(shot: Shot, tracks: list[Track], target_aspect: float, pic_aspect: float,

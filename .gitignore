@@ -6,3 +6,4 @@ out/
 testdata/*.mp4
 testdata/*.m4a
 cache/
+.env.local

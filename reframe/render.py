@@ -32,6 +32,15 @@ def _crop(frame: np.ndarray, x: float, y: float, w: float, h: float) -> np.ndarr
     return frame[max(0, y0):min(H, y1), max(0, x0):min(W, x1)]
 
 
+def _blur_cover(src: np.ndarray, out_w: int, out_h: int) -> np.ndarray:
+    sh, sw = src.shape[:2]
+    cover = max(out_w / sw, out_h / sh)
+    bg = cv2.resize(src, (int(sw * cover) + 1, int(sh * cover) + 1), interpolation=cv2.INTER_AREA)
+    oy, ox = (bg.shape[0] - out_h) // 2, (bg.shape[1] - out_w) // 2
+    bg = cv2.GaussianBlur(bg[oy:oy + out_h, ox:ox + out_w], (0, 0), sigmaX=max(out_w, out_h) / 40)
+    return (bg * 0.6).astype(np.uint8)
+
+
 def _fit_over_blur(src: np.ndarray, out_w: int, out_h: int) -> np.ndarray:
     sh, sw = src.shape[:2]
     cover = max(out_w / sw, out_h / sh)
@@ -103,6 +112,12 @@ def render(source: str, result: dict, out_path: str, out_h: int = 720) -> None:
             if seg["layout"] == "fit":
                 picture = frame[pic["y"]:pic["y"] + pic["h"], pic["x"]:pic["x"] + pic["w"]]
                 canvas[zy:zy + zh, zx:zx + zw] = _fit_over_blur(picture, zw, zh)
+            elif seg["layout"] == "framed":
+                # Blurred copy of the picture behind, the framed region on top.
+                picture = frame[pic["y"]:pic["y"] + pic["h"], pic["x"]:pic["x"] + pic["w"]]
+                canvas[:] = _fit_over_blur(picture, out_w, out_h) * 0 + _blur_cover(picture, out_w, out_h)
+                crop = _crop(frame, *_interp(z["keyframes"], t))
+                canvas[zy:zy + zh, zx:zx + zw] = cv2.resize(crop, (zw, zh), interpolation=cv2.INTER_CUBIC)
             else:
                 crop = _crop(frame, *_interp(z["keyframes"], t))
                 canvas[zy:zy + zh, zx:zx + zw] = cv2.resize(crop, (zw, zh), interpolation=cv2.INTER_CUBIC)

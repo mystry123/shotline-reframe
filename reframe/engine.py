@@ -10,21 +10,25 @@ renderer only has to crop the source; picture-area handling is internal.
 from __future__ import annotations
 
 import time
-from dataclasses import dataclass, asdict
+
+import cv2
+import numpy as np
+from dataclasses import dataclass, asdict, field
 
 from .decode import decode
 from .bodies import BodyDetector
 from .faces import FaceDetector
 from .content import ContentBox, content_boxes
-from .layout import Segment, plan_content, plan_shot
+from .layout import Segment, plan_content, plan_shot, shot_alternatives
 from .probe import Rect, VideoInfo, find_picture_area, probe
 from .shots import Shot, detect_shots
 from .options import QUALITY, Options
 from .overlays import TextBand, detect_text_bands
 from .speakers import People, Turn, active_person, describe_tracks, group_people, load_turns, map_speakers
+from .text import TextBox, TextDetector
 from .tracks import Track, classify, mark_checked, track_shot
 
-ENGINE_VERSION = "2.0.0-dev"
+ENGINE_VERSION = "2.1.0-dev"
 
 
 @dataclass
@@ -37,15 +41,19 @@ class Analysis:
     people: People
     text: list[TextBand]
     content: list[ContentBox | None]
+    text_in_picture: list[list[TextBox]]
     quality: str
     fps: float
     timings: dict[str, float]
+    # One still (JPEG of the picture area) from the middle of each shot, for
+    # the AI director's contact sheets.
+    stills: dict[int, bytes] = field(default_factory=dict)
 
 
 # Rough share of analysis time per stage, for progress reporting.
 STAGES = [("probe", "Reading the video", 0.05), ("shots", "Finding cuts", 0.15), ("faces", "Finding faces", 0.25),
           ("tracks", "Tracking people", 0.05), ("people", "Checking who is a person", 0.35),
-          ("content", "Finding the content", 0.1), ("speakers", "Matching voices", 0.05)]
+          ("content", "Finding the content and text", 0.1), ("speakers", "Matching voices", 0.05)]
 
 
 def analyze(path: str, words: list[dict] | None = None, quality: str = "standard",
@@ -105,6 +113,7 @@ def analyze(path: str, words: list[dict] | None = None, quality: str = "standard
     t0 = time.perf_counter()
     stage("content")
     content = content_boxes(frames)
+    text_in_picture = TextDetector().detect(frames, every=every)
     timings["content"] = time.perf_counter() - t0
 
     t0 = time.perf_counter()
@@ -114,7 +123,62 @@ def analyze(path: str, words: list[dict] | None = None, quality: str = "standard
     turns = load_turns(words or [])
     people = map_speakers(turns, shots, tracks, person_of)
     timings["speakers"] = time.perf_counter() - t0
-    return Analysis(info, area, shots, tracks, turns, people, text, content, quality, q["fps"], timings)
+
+    stills = {}
+    for s in shots:
+        i = int(np.clip(round((s.start + s.end) / 2 * frames.fps), 0, len(frames.data) - 1))
+        ok, jpg = cv2.imencode(".jpg", frames.data[i], [cv2.IMWRITE_JPEG_QUALITY, 85])
+        if ok:
+            stills[s.index] = jpg.tobytes()
+    return Analysis(info, area, shots, tracks, turns, people, text, content, text_in_picture, quality, q["fps"], timings, stills)
+
+
+SCREEN_MIN_BOXES = 15          # a frame with this much small text is a screen (page, app, recording)
+CAPTION_MIN_H = 0.02           # text at least this tall (share of picture height) is caption/title size
+CAPTION_MIN_SHARE = 0.2        # ...and on screen in at least this share of the shot's samples
+
+
+def _shot_text(analysis: "Analysis", shot: Shot) -> tuple[bool, tuple[float, float, float, float] | None]:
+    """(is the shot a screen, box of captions/titles that must stay in frame)."""
+    samples = [boxes for i, boxes in enumerate(analysis.text_in_picture)
+               if shot.start <= i / analysis.fps < shot.end and i % max(1, int(round(analysis.fps))) == 0]
+    if not samples:
+        return False, None
+    counts = [len(b) for b in samples]
+    small = [b for frame in samples for b in frame if b.h < CAPTION_MIN_H]
+    screen = float(np.median(counts)) >= SCREEN_MIN_BOXES or (float(np.median(counts)) >= 10 and len(small) > 0.6 * sum(counts))
+    big = [[b for b in frame if b.h >= CAPTION_MIN_H] for frame in samples]
+    with_text = [b for b in big if b]
+    if len(with_text) < CAPTION_MIN_SHARE * len(samples):
+        return screen, None
+    allb = [b for frame in with_text for b in frame]
+    x0 = float(np.percentile([b.x0 for b in allb], 5)); y0 = float(np.percentile([b.y0 for b in allb], 5))
+    x1 = float(np.percentile([b.x1 for b in allb], 95)); y1 = float(np.percentile([b.y1 for b in allb], 95))
+    # Text is sampled about once a second, so a short shot may catch one line
+    # of a two-line caption. Captions stay in one band through a video: a
+    # shot with captions in the lower half reserves the whole band.
+    if (y0 + y1) / 2 >= 0.5:
+        band = _caption_band(analysis)
+        if band:
+            x0, y0, x1, y1 = min(x0, band[0]), min(y0, band[1]), max(x1, band[2]), max(y1, band[3])
+    return screen, (x0, y0, x1, y1)
+
+
+def _caption_band(analysis: "Analysis") -> tuple[float, float, float, float] | None:
+    """Where captions appear across the whole video (lower half, caption-size
+    text, frames that aren't screens)."""
+    cached = getattr(analysis, "_caption_band_cache", "unset")
+    if cached != "unset":
+        return cached
+    every = max(1, int(round(analysis.fps)))
+    boxes = [b for i, frame in enumerate(analysis.text_in_picture) if i % every == 0 and len(frame) < 10
+             for b in frame if b.h >= CAPTION_MIN_H and (b.y0 + b.y1) / 2 >= 0.5]
+    band = None
+    if len(boxes) >= 3:
+        band = (float(np.percentile([b.x0 for b in boxes], 5)), float(np.percentile([b.y0 for b in boxes], 5)),
+                float(np.percentile([b.x1 for b in boxes], 95)), float(np.percentile([b.y1 for b in boxes], 95)))
+    object.__setattr__(analysis, "_caption_band_cache", band)
+    return band
 
 
 def parse_ratio(ratio: str) -> float:
@@ -161,17 +225,17 @@ def _place_text(band: TextBand, info: VideoInfo, target: float) -> dict:
     }
 
 
-def plan(analysis: Analysis, ratio: str, keep_text: list[str] | None = None,
-         options: Options | None = None) -> dict:
-    """`keep_text`: ids of detected burned-in text (from result["text"]) the
-    user chose to keep; everything else outside the picture is dropped."""
+def shot_options(analysis: Analysis, ratio: str, options: Options | None = None) -> list[dict]:
+    """Per shot: {"shot": Shot, "options": {name: [Segment]}}, where "rules" is
+    the rule-based choice and the others are alternatives the AI director may
+    pick instead."""
     target = parse_ratio(ratio)
     area = analysis.area
     pic_aspect = area.w / area.h
     options = options or Options(quality=analysis.quality)
     # How far the camera may zoom in: plan output resolution + the user's zoom choice.
     min_crop_h = options.min_crop_height(area.h)
-    segments = []
+    out = []
     for s in analysis.shots:
         shot_tracks = analysis.tracks[s.index]
 
@@ -181,11 +245,39 @@ def plan(analysis: Analysis, ratio: str, keep_text: list[str] | None = None,
                 return None
             return next((tr for tr in shot_tracks if analysis.people.person_of.get((s.index, tr.track_id)) == pid), None)
 
-        has_people = any(t.is_person for t in shot_tracks)
+        screen, captions = _shot_text(analysis, s)
+        has_people = any(t.is_person for t in shot_tracks) and not screen  # faces in thumbnails aren't subjects
         if not has_people and abs(target / pic_aspect - 1) >= 0.03:
-            segments.extend(plan_content(s, analysis.content, analysis.fps, target, pic_aspect))
+            rules = plan_content(s, analysis.content, analysis.fps, target, pic_aspect)
         else:
-            segments.extend(plan_shot(s, shot_tracks, target, pic_aspect, analysis.fps, min_crop_h, speaking))
+            rules = plan_shot(s, shot_tracks, target, pic_aspect, analysis.fps, min_crop_h, speaking, captions)
+        people_tracks = shot_tracks if has_people else []
+        out.append({"shot": s, "options": shot_alternatives(s, people_tracks, rules, target, pic_aspect,
+                                                            analysis.fps, min_crop_h, captions)})
+    return out
+
+
+def plan(analysis: Analysis, ratio: str, keep_text: list[str] | None = None,
+         options: Options | None = None, choices: dict[int, str] | None = None,
+         director: dict | None = None) -> dict:
+    """`keep_text`: ids of detected burned-in text (from result["text"]) the
+    user chose to keep; everything else outside the picture is dropped.
+    `choices`: shot index → option name (from the AI director); shots not
+    listed use the rules. `director`: summary of how choices were made."""
+    target = parse_ratio(ratio)
+    area = analysis.area
+    options = options or Options(quality=analysis.quality)
+    min_crop_h = options.min_crop_height(area.h)
+    segments = []
+    picked = []
+    for item in shot_options(analysis, ratio, options):
+        s, opts = item["shot"], item["options"]
+        name = (choices or {}).get(s.index, "rules")
+        if name not in opts:
+            name = "rules"
+        segments.extend(opts[name])
+        picked.append({"shot": s.index, "start": round(s.start, 3), "end": round(s.end, 3), "choice": name,
+                       "options": list(opts)})
     return {
         "engine": ENGINE_VERSION,
         "source": {"width": analysis.info.width, "height": analysis.info.height, "duration": analysis.info.duration,
@@ -197,6 +289,8 @@ def plan(analysis: Analysis, ratio: str, keep_text: list[str] | None = None,
         "speakers": {spk: {"person": pid, "confidence": round(analysis.people.confidence.get(spk, 0), 2)}
                      for spk, pid in analysis.people.speaker_person.items()},
         "segments": [_to_frame(s, analysis.info, area) for s in segments],
+        "shots": picked,
+        "director": director or {"used": False},
         # Burned-in text found outside the picture: the editor asks whether to
         # keep it (default: drop; suggest Shotline captions when not keyable).
         "text": [{"id": t.id, "kind": t.kind, "region": t.region, "description": t.describe(),
