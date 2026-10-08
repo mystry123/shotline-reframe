@@ -8,3 +8,5 @@ select = ["E9", "F"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+# Import the package from the repo root (plain `pytest`, as in CI).
+pythonpath = ["."]
