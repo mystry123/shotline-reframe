@@ -58,6 +58,15 @@ healthy() {
 log "deploying $target (was $previous)"
 if install_commit "$target" && healthy; then
   log "deployed $target: $(curl -fsS --max-time 3 "$HEALTH_URL")"
+  # Root-owned files are installed by hand (see README); say when they're stale.
+  for pair in "deploy/shotline-deploy:/usr/local/bin/shotline-deploy" \
+              "deploy/shotline-reframe.service:/etc/systemd/system/shotline-reframe.service" \
+              "deploy/Caddyfile:/etc/caddy/Caddyfile"; do
+    src="${pair%%:*}"; dst="${pair#*:}"
+    if [[ -r "$dst" ]] && ! cmp -s "$src" "$dst"; then
+      log "WARNING: $dst differs from the repo's $src; reinstall it (as root)"
+    fi
+  done
   exit 0
 fi
 
