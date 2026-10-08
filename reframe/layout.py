@@ -304,13 +304,41 @@ def _same_framing(a: list[Segment], b: list[Segment]) -> bool:
     return True
 
 
+KEEP_TOLERANCE = 0.02   # share of the picture a crop may shave off a must-keep box
+
+
+def _inner(person: Track, captions):
+    """What a crop must keep: the face (forehead to chin and a little neck; a
+    tight close-up may trim the hair) and the captions whole when there are any."""
+    x, y, w, h = person.median("x"), person.median("y"), person.median("w"), person.median("h")
+    box = (x - 0.1 * w, y - 0.05 * h, x + 1.1 * w, y + 1.3 * h)
+    if captions:
+        box = (min(box[0], captions[0]), min(box[1], captions[1]), max(box[2], captions[2]), max(box[3], captions[3]))
+    return box
+
+
+def _keeps(seg: Segment, box) -> bool:
+    """Every keyframe of every zone contains `box` (within KEEP_TOLERANCE)."""
+    x0, y0, x1, y1 = box
+    for z in seg.zones:
+        for k in z.keyframes:
+            if (k.x > x0 + KEEP_TOLERANCE or k.y > y0 + KEEP_TOLERANCE
+                    or k.x + k.w < x1 - KEEP_TOLERANCE or k.y + k.h < y1 - KEEP_TOLERANCE):
+                return False
+    return True
+
+
 def shot_alternatives(shot: Shot, tracks: list[Track], rules: list[Segment], target_aspect: float,
                       pic_aspect: float, fps: float, min_crop_h: float, captions=None) -> dict[str, list[Segment]]:
     """Named framings of a shot, starting with the rules' choice ("rules").
     Near-duplicates are left out, so a shot may have only one."""
     out: dict[str, list[Segment]] = {"rules": rules}
 
-    def add(name: str, segs: list[Segment]) -> None:
+    def add(name: str, segs: list[Segment], keep=None) -> None:
+        # A crop that would cut what must stay (face and shoulders, captions)
+        # isn't offered at all: the director can't pick a mistake.
+        if keep is not None and not all(_keeps(seg, keep) for seg in segs):
+            return
         if not any(_same_framing(segs, v) for v in out.values()):
             out[name] = segs
 
@@ -324,7 +352,7 @@ def shot_alternatives(shot: Shot, tracks: list[Track], rules: list[Segment], tar
         # Close: a medium close-up following the face (may cut captions).
         w, h = _crop_size(target_aspect, pic_aspect, p.median("h"), FACE_FRACTION_SINGLE, min_crop_h)
         add("close", [Segment(shot.start, shot.end, "single", [Zone((0, 0, 1, 1), _follow(shot, [p], w, h, fps), tag)],
-                              "close-up on the person")])
+                              "close-up on the person")], keep=_inner(p, captions))
         # Medium: the biggest crop of the target shape, on the person, keeping captions when they fit.
         # Never at the cost of the face: captions are kept only if they fit together with it.
         kfs = _follow(shot, [p], max_w, max_h, fps)
@@ -333,7 +361,8 @@ def shot_alternatives(shot: Shot, tracks: list[Track], rules: list[Segment], tar
             for k in kfs:
                 k.x = float(np.clip(k.x, max(0.0, kx1 - max_w), min(kx0, 1 - max_w)))
                 k.y = float(np.clip(k.y, max(0.0, ky1 - max_h), min(ky0, 1 - max_h)))
-        add("medium", [Segment(shot.start, shot.end, "single", [Zone((0, 0, 1, 1), kfs, tag)], "as close as the shape allows")])
+        add("medium", [Segment(shot.start, shot.end, "single", [Zone((0, 0, 1, 1), kfs, tag)], "as close as the shape allows")],
+            keep=_inner(p, captions))
         # Whole: head, shoulders and captions shown whole over a blurred
         # background, as big as they can be (tighter than showing the whole picture).
         for name, spread in (("whole", CORE), ("whole-wide", PREFERRED)):

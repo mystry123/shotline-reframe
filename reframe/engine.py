@@ -135,6 +135,7 @@ def analyze(path: str, words: list[dict] | None = None, quality: str = "standard
 
 SCREEN_MIN_BOXES = 15          # a frame with this much small text is a screen (page, app, recording)
 CAPTION_MIN_H = 0.02           # text at least this tall (share of picture height) is caption/title size
+CAPTION_MIN_ASPECT = 1.5      # width / height in pixels: text runs sideways
 CAPTION_MIN_SHARE = 0.2        # ...and on screen in at least this share of the shot's samples
 
 
@@ -147,7 +148,11 @@ def _shot_text(analysis: "Analysis", shot: Shot) -> tuple[bool, tuple[float, flo
     counts = [len(b) for b in samples]
     small = [b for frame in samples for b in frame if b.h < CAPTION_MIN_H]
     screen = float(np.median(counts)) >= SCREEN_MIN_BOXES or (float(np.median(counts)) >= 10 and len(small) > 0.6 * sum(counts))
-    big = [[b for b in frame if b.h >= CAPTION_MIN_H] for frame in samples]
+    # Caption-size text, and shaped like text (a word or line is wider than
+    # it is tall; square blobs are beards, logos and patterns).
+    pic_aspect = analysis.area.w / analysis.area.h
+    big = [[b for b in frame if b.h >= CAPTION_MIN_H and (b.x1 - b.x0) * pic_aspect / b.h >= CAPTION_MIN_ASPECT]
+           for frame in samples]
     with_text = [b for b in big if b]
     if len(with_text) < CAPTION_MIN_SHARE * len(samples):
         return screen, None
@@ -172,7 +177,8 @@ def _caption_band(analysis: "Analysis") -> tuple[float, float, float, float] | N
         return cached
     every = max(1, int(round(analysis.fps)))
     boxes = [b for i, frame in enumerate(analysis.text_in_picture) if i % every == 0 and len(frame) < 10
-             for b in frame if b.h >= CAPTION_MIN_H and (b.y0 + b.y1) / 2 >= 0.5]
+             for b in frame if b.h >= CAPTION_MIN_H and (b.y0 + b.y1) / 2 >= 0.5
+             and (b.x1 - b.x0) * analysis.area.w / analysis.area.h / b.h >= CAPTION_MIN_ASPECT]
     band = None
     if len(boxes) >= 3:
         band = (float(np.percentile([b.x0 for b in boxes], 5)), float(np.percentile([b.y0 for b in boxes], 5)),

@@ -98,25 +98,69 @@ def test_converse_request_shape(analysis, options, monkeypatch):
     assert images and all(c["image"]["source"]["bytes"][:2] == b"\xff\xd8" for c in images)
 
 
-def test_gemini_request_shape(analysis, options, monkeypatch):
-    """The Gemini path sends the sheets inline with a reply schema, and reports HTTP errors."""
+class _FakeModels:
+    """Stands in for client.models: replies (or raises) in order."""
+
+    def __init__(self, outcomes):
+        self.outcomes, self.calls = list(outcomes), []
+
+    def generate_content(self, **kwargs):
+        self.calls.append(kwargs)
+        outcome = self.outcomes.pop(0)
+        if isinstance(outcome, Exception):
+            raise outcome
+        from google.genai import types
+        return types.GenerateContentResponse(candidates=[types.Candidate(
+            finish_reason="STOP", content=types.Content(role="model", parts=[types.Part(text=outcome)]))])
+
+
+def _gemini(monkeypatch, outcomes):
+    models = _FakeModels(outcomes)
+    monkeypatch.setenv("DIRECTOR_PROVIDER", "gemini")
+    monkeypatch.setenv("DIRECTOR_MODEL", "gemini-3.8-flash")
+    monkeypatch.setattr(director, "_gemini_client", lambda: type("C", (), {"models": models})())
+    monkeypatch.setattr(director.time, "sleep", lambda s: None)
+    return models
+
+
+def _api_error(code):
+    from google.genai import errors
+    return (errors.ServerError if code >= 500 else errors.ClientError)(code, {"error": {"code": code, "message": "x"}})
+
+
+def test_gemini_sends_images_with_a_reply_schema(analysis, options, monkeypatch):
+    models = _gemini(monkeypatch, ['{"shots": []}'])
+    summary = director.direct(analysis, options, parse_ratio("2:3"))
+    assert summary["used"] and summary["model"] == "gemini-3.8-flash"
+    call = models.calls[0]
+    assert call["model"] == "gemini-3.8-flash"
+    assert call["config"].response_mime_type == "application/json" and call["config"].response_json_schema
+    images = [c for c in call["contents"] if not isinstance(c, str)]
+    assert images and all(c.inline_data.mime_type == "image/jpeg" for c in images)
+
+
+def test_gemini_retries_rate_limits_and_server_errors(analysis, options, monkeypatch):
+    models = _gemini(monkeypatch, [_api_error(429), _api_error(503), '{"shots": []}'])
+    assert director.direct(analysis, options, parse_ratio("2:3"))["used"]
+    assert len(models.calls) == 3
+
+
+@pytest.mark.parametrize("outcomes,expect", [
+    ([_api_error(400)], "ClientError"),                                   # not retried
+    ([_api_error(429)] * 4, "Retryable"),                                 # retries run out
+    (["not json at all"], "ValueError"),                                  # invalid output
+    (['{"shots": [{"shot": "x"}]}'], "ValueError"),                       # wrong shape
+])
+def test_gemini_failures_keep_the_rules_and_are_logged(analysis, options, monkeypatch, caplog, outcomes, expect):
+    models = _gemini(monkeypatch, outcomes)
+    summary = director.direct(analysis, options, parse_ratio("2:3"))
+    assert not summary["used"] and summary["choices"] == {} and expect in summary["error"]
+    assert "keeping the rules' framing" in caplog.text
+    assert len(models.calls) == (4 if expect == "Retryable" else 1)
+
+
+def test_gemini_timeout_keeps_the_rules(analysis, options, monkeypatch):
     import httpx
-
-    sent = {}
-
-    def fake_post(url, headers, json, timeout):
-        sent.update(url=url, body=json)
-        reply = {"candidates": [{"finishReason": "STOP", "content": {"parts": [{"text": '{"shots": []}'}]}}]}
-        return httpx.Response(200, json=reply)
-
-    monkeypatch.setenv("REFRAME_DIRECTOR", "gemini")
-    monkeypatch.setenv("GEMINI_API_KEY", "test-key")
-    monkeypatch.setattr(httpx, "post", fake_post)
+    _gemini(monkeypatch, [httpx.ReadTimeout("timed out")])
     summary = director.direct(analysis, options, parse_ratio("2:3"))
-    assert summary["used"] and sent["url"].endswith(f"/models/{director.model_id()}:generateContent")
-    assert sent["body"]["generationConfig"]["responseMimeType"] == "application/json"
-    assert any("inline_data" in p for p in sent["body"]["contents"][0]["parts"])
-
-    monkeypatch.setattr(httpx, "post", lambda *a, **k: httpx.Response(402, json={"error": {"message": "credits depleted"}}))
-    summary = director.direct(analysis, options, parse_ratio("2:3"))
-    assert not summary["used"] and "402" in summary["error"]
+    assert not summary["used"] and "ReadTimeout" in summary["error"]
