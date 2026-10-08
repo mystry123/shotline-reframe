@@ -3,32 +3,40 @@
 The rules give every shot a safe framing ("rules") plus alternatives (closer,
 as close as the shape allows, the person shown whole, the whole picture). For
 shots with more than one option, each option is drawn on a still from the
-shot, laid out as a labelled contact sheet, and Claude picks one per shot with
-a short reason.
+shot, laid out as a labelled contact sheet, and a vision model picks one per
+shot with a short reason.
 
-Any failure (no access, refusal, unparsable reply, low confidence) keeps the
-rules' choice for that shot, so the director can only change framings, never
-break a plan.
+Any failure (no access, timeout, refusal, invalid reply, low confidence) keeps
+the rules' choice for that shot and is logged, so the director can only change
+framings, never break a plan. Rate limits (429) and server errors (5xx) are
+retried with exponential backoff first.
 
-Environment:
-    REFRAME_DIRECTOR         off (default)
-                             gemini     Google Gemini (GEMINI_API_KEY)
-                             converse   any vision model on Amazon Bedrock (Converse API):
-                                        Amazon Nova, Qwen3-VL, OpenAI, Mistral, Gemma, …
+Environment (the older REFRAME_DIRECTOR* names are still read as fallbacks):
+    DIRECTOR_PROVIDER        off (default)
+                             gemini     Gemini on Vertex AI (google-genai, Application
+                                        Default Credentials; no API keys). Also reads
+                                        GOOGLE_GENAI_USE_VERTEXAI=True,
+                                        GOOGLE_CLOUD_PROJECT, GOOGLE_CLOUD_LOCATION
+                             converse   any vision model on Amazon Bedrock (Converse API)
                              bedrock    Claude on Amazon Bedrock
                              anthropic  Claude on the Claude API
-    REFRAME_DIRECTOR_MODEL   model or inference-profile id. Defaults: gemini →
-                             gemini-3.8-flash; converse → qwen.qwen3-vl-235b-a22b;
-                             bedrock/anthropic → claude-opus-5-5
-                             (the Bedrock "anthropic." prefix is added automatically)
-    REFRAME_DIRECTOR_REGION  AWS region for Bedrock (default ap-south-1)
+    DIRECTOR_MODEL           model id. Defaults: gemini → gemini-3.8-flash;
+                             converse → qwen.qwen3-vl-235b-a22b; bedrock/anthropic →
+                             claude-opus-5-5 (Bedrock's "anthropic." prefix is added)
+    DIRECTOR_REGION          AWS region for Bedrock (default ap-south-1)
+    DIRECTOR_THINKING        Gemini thinking level (default low: a whole video's
+                             sheets in seconds; medium/high can exceed the deadline)
+    DIRECTOR_TIMEOUT_S       per-attempt timeout (default 60)
+    DIRECTOR_RETRIES         extra attempts after a 429/5xx (default 3)
 """
 
 from __future__ import annotations
 
 import base64
 import json
+import logging
 import os
+import random
 import re
 import time
 
@@ -36,6 +44,8 @@ import cv2
 import numpy as np
 
 from .layout import Segment
+
+log = logging.getLogger("reframe.director")
 
 PROMPT_VERSION = "1"
 MIN_CONFIDENCE = 0.5
@@ -158,12 +168,18 @@ def contact_sheet(rows: list[dict], target_aspect: float) -> bytes:
 # The model call
 # ---------------------------------------------------------------------------
 
+def _env(name: str, default: str = "") -> str:
+    """DIRECTOR_<name>, or the older REFRAME_DIRECTOR_<name> / REFRAME_DIRECTOR."""
+    legacy = "REFRAME_DIRECTOR" if name == "PROVIDER" else f"REFRAME_DIRECTOR_{name}"
+    return os.environ.get(f"DIRECTOR_{name}") or os.environ.get(legacy) or default
+
+
 def _provider() -> str:
-    return os.environ.get("REFRAME_DIRECTOR", "off")
+    return _env("PROVIDER", "off")
 
 
 def _region() -> str:
-    return os.environ.get("REFRAME_DIRECTOR_REGION", "ap-south-1")
+    return _env("REGION", "ap-south-1")
 
 
 def configured() -> bool:
@@ -172,10 +188,10 @@ def configured() -> bool:
 
 def model_id() -> str:
     if _provider() == "gemini":
-        return os.environ.get("REFRAME_DIRECTOR_MODEL", "gemini-3.8-flash")
+        return _env("MODEL", "gemini-3.8-flash")
     if _provider() == "converse":
-        return os.environ.get("REFRAME_DIRECTOR_MODEL", "qwen.qwen3-vl-235b-a22b")
-    model = os.environ.get("REFRAME_DIRECTOR_MODEL", "claude-opus-5-5")
+        return _env("MODEL", "qwen.qwen3-vl-235b-a22b")
+    model = _env("MODEL", "claude-opus-5-5")
     return ("anthropic." + model) if _provider() == "bedrock" else model
 
 
@@ -187,9 +203,27 @@ def _client():
     return Anthropic()
 
 
+class Retryable(Exception):
+    """A rate limit or server error worth trying again."""
+
+
+def _with_retries(call):
+    """Run `call`, retrying Retryable errors with exponential backoff and jitter."""
+    retries = int(_env("RETRIES", "3"))
+    for attempt in range(retries + 1):
+        try:
+            return call()
+        except Retryable as error:
+            if attempt == retries:
+                raise
+            delay = min(20.0, 1.5 * 2 ** attempt) * (0.75 + 0.5 * random.random())
+            log.warning("director: %s; retrying in %.1fs (attempt %d of %d)", error, delay, attempt + 2, retries + 1)
+            time.sleep(delay)
+
+
 def _ask(sheets: list[bytes], shot_list: str) -> str:
     if _provider() == "gemini":
-        return _ask_gemini(sheets, shot_list)
+        return _with_retries(lambda: _ask_gemini(sheets, shot_list))
     if _provider() == "converse":
         return _ask_converse(sheets, shot_list)
     return _ask_claude(sheets, shot_list)
@@ -202,33 +236,61 @@ REPLY_SCHEMA = {"type": "object", "required": ["shots"], "properties": {"shots":
         "reason": {"type": "string"}}}}}}
 
 
-def _ask_gemini(sheets: list[bytes], shot_list: str) -> str:
-    """Google Gemini through its REST API (GEMINI_API_KEY)."""
-    import httpx
+_gemini = None
 
-    key = os.environ.get("GEMINI_API_KEY", "")
-    if not key:
-        raise RuntimeError("GEMINI_API_KEY is not set")
-    parts: list[dict] = []
+
+def _gemini_client():
+    """One Vertex AI client per process (a client closes itself when garbage
+    collected, so it must be kept). Configured from the environment
+    (GOOGLE_GENAI_USE_VERTEXAI, GOOGLE_CLOUD_PROJECT, GOOGLE_CLOUD_LOCATION) and
+    Application Default Credentials: gcloud ADC on a laptop, the attached
+    service account on GCP."""
+    global _gemini
+    if _gemini is None:
+        _gemini = _new_gemini_client()
+    return _gemini
+
+
+def _new_gemini_client():
+    """Vertex AI client from the environment (GOOGLE_GENAI_USE_VERTEXAI,
+    GOOGLE_CLOUD_PROJECT, GOOGLE_CLOUD_LOCATION) and Application Default
+    Credentials: gcloud ADC on a laptop, the attached service account on GCP."""
+    from google import genai
+    from google.genai import types
+
+    timeout_ms = int(float(_env("TIMEOUT_S", "60")) * 1000)
+    # Retries are ours (_with_retries), so the SDK makes a single attempt.
+    return genai.Client(http_options=types.HttpOptions(timeout=timeout_ms,
+                                                      retry_options=types.HttpRetryOptions(attempts=1)))
+
+
+def _ask_gemini(sheets: list[bytes], shot_list: str) -> str:
+    from google.genai import errors, types
+
+    contents: list = []
     for i, jpg in enumerate(sheets):
-        parts.append({"text": f"Contact sheet {i + 1} of {len(sheets)}:"})
-        parts.append({"inline_data": {"mime_type": "image/jpeg", "data": base64.standard_b64encode(jpg).decode()}})
-    parts.append({"text": f"Shots to decide (letters available per shot):\n{shot_list}"})
-    response = httpx.post(
-        f"https://generativelanguage.googleapis.com/v1beta/models/{model_id()}:generateContent",
-        headers={"x-goog-api-key": key},
-        json={"system_instruction": {"parts": [{"text": SYSTEM}]},
-              "contents": [{"role": "user", "parts": parts}],
-              "generationConfig": {"responseMimeType": "application/json", "responseJsonSchema": REPLY_SCHEMA}},
-        timeout=120,
-    )
-    if response.status_code != 200:
-        message = response.json().get("error", {}).get("message", "") if response.content else ""
-        raise RuntimeError(f"Gemini HTTP {response.status_code}: {message[:150]}")
-    candidate = (response.json().get("candidates") or [{}])[0]
-    if candidate.get("finishReason") not in (None, "STOP"):
-        raise RuntimeError(f"Gemini stopped: {candidate.get('finishReason')}")
-    return "".join(p.get("text", "") for p in candidate.get("content", {}).get("parts", []) if not p.get("thought"))
+        contents.append(f"Contact sheet {i + 1} of {len(sheets)}:")
+        contents.append(types.Part.from_bytes(data=jpg, mime_type="image/jpeg"))
+    contents.append(f"Shots to decide (letters available per shot):\n{shot_list}")
+    try:
+        response = _gemini_client().models.generate_content(
+            model=model_id(),
+            contents=contents,
+            config=types.GenerateContentConfig(system_instruction=SYSTEM, response_mime_type="application/json",
+                                               response_json_schema=REPLY_SCHEMA,
+                                               thinking_config=types.ThinkingConfig(thinking_level=_env("THINKING", "low"))),
+        )
+    except errors.APIError as error:
+        if error.code == 429 or (error.code or 0) >= 500:
+            raise Retryable(f"Gemini HTTP {error.code}") from error
+        raise
+    candidate = (response.candidates or [None])[0]
+    reason = getattr(candidate, "finish_reason", None)
+    if reason is not None and getattr(reason, "name", str(reason)) != "STOP":
+        raise RuntimeError(f"Gemini stopped: {getattr(reason, 'name', reason)}")
+    if not response.text:
+        raise ValueError("empty reply")
+    return response.text
 
 
 def _ask_converse(sheets: list[bytes], shot_list: str) -> str:
@@ -328,5 +390,6 @@ def direct(analysis, shot_options: list[dict], target_aspect: float) -> dict:
         summary["used"] = True
     except Exception as error:  # noqa: BLE001 - the rules stand in
         summary["error"] = f"{type(error).__name__}: {str(error)[:200]}"
+        log.warning("director: %s failed, keeping the rules' framing: %s", model_id(), summary["error"])
     summary["seconds"] = round(time.time() - started, 2)
     return summary
