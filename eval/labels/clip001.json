@@ -1,0 +1,42 @@
+{
+ "status": "reviewed",
+ "note": "9:16 export of a letterboxed 16:9 interview; 7 shots (two people, 3 cameras).",
+ "picture": {
+  "x": 0,
+  "y": 219,
+  "w": 360,
+  "h": 202
+ },
+ "transitions": [
+  {
+   "type": "cut",
+   "start": 13.92,
+   "end": 13.92
+  },
+  {
+   "type": "cut",
+   "start": 15.72,
+   "end": 15.72
+  },
+  {
+   "type": "cut",
+   "start": 17.0,
+   "end": 17.0
+  },
+  {
+   "type": "cut",
+   "start": 21.04,
+   "end": 21.04
+  },
+  {
+   "type": "cut",
+   "start": 27.2,
+   "end": 27.2
+  },
+  {
+   "type": "cut",
+   "start": 33.92,
+   "end": 33.92
+  }
+ ]
+}

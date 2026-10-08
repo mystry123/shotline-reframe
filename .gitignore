@@ -8,3 +8,4 @@ testdata/*.m4a
 cache/
 .env.local
 .env
+eval/.cache/
