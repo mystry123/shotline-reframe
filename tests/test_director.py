@@ -76,3 +76,23 @@ def test_failures_fall_back_to_the_rules(analysis, options, monkeypatch, text, e
     _reply(monkeypatch, text, error)
     summary = director.direct(analysis, options, parse_ratio("2:3"))
     assert not summary["used"] and summary["choices"] == {} and "error" in summary
+
+
+def test_converse_request_shape(analysis, options, monkeypatch):
+    """The Bedrock Converse path sends every sheet as an image and reads the text back."""
+    import boto3
+
+    sent = {}
+
+    class FakeRuntime:
+        def converse(self, **kwargs):
+            sent.update(kwargs)
+            return {"stopReason": "end_turn", "output": {"message": {"content": [{"text": '{"shots": []}'}]}}}
+
+    monkeypatch.setenv("REFRAME_DIRECTOR", "converse")
+    monkeypatch.setenv("REFRAME_DIRECTOR_MODEL", "amazon.nova-pro-v1:0")
+    monkeypatch.setattr(boto3, "client", lambda *a, **k: FakeRuntime())
+    summary = director.direct(analysis, options, parse_ratio("2:3"))
+    assert summary["used"] and summary["model"] == "amazon.nova-pro-v1:0"
+    images = [c for c in sent["messages"][0]["content"] if "image" in c]
+    assert images and all(c["image"]["source"]["bytes"][:2] == b"\xff\xd8" for c in images)

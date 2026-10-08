@@ -11,9 +11,15 @@ rules' choice for that shot, so the director can only change framings, never
 break a plan.
 
 Environment:
-    REFRAME_DIRECTOR         off (default) | bedrock | anthropic
-    REFRAME_DIRECTOR_MODEL   model id without the Bedrock prefix (default claude-opus-5-5)
-    REFRAME_DIRECTOR_REGION  AWS region for Bedrock (default us-east-1)
+    REFRAME_DIRECTOR         off (default)
+                             converse   any vision model on Amazon Bedrock (Converse API):
+                                        Amazon Nova, Qwen3-VL, OpenAI, Mistral, Gemma, …
+                             bedrock    Claude on Amazon Bedrock
+                             anthropic  Claude on the Claude API
+    REFRAME_DIRECTOR_MODEL   model or inference-profile id. Defaults: converse →
+                             qwen.qwen3-vl-235b-a22b; bedrock/anthropic → claude-opus-5-5
+                             (the Bedrock "anthropic." prefix is added automatically)
+    REFRAME_DIRECTOR_REGION  AWS region for Bedrock (default ap-south-1)
 """
 
 from __future__ import annotations
@@ -150,26 +156,62 @@ def contact_sheet(rows: list[dict], target_aspect: float) -> bytes:
 # The model call
 # ---------------------------------------------------------------------------
 
+def _provider() -> str:
+    return os.environ.get("REFRAME_DIRECTOR", "off")
+
+
+def _region() -> str:
+    return os.environ.get("REFRAME_DIRECTOR_REGION", "ap-south-1")
+
+
 def configured() -> bool:
-    return os.environ.get("REFRAME_DIRECTOR", "off") in ("bedrock", "anthropic")
+    return _provider() in ("converse", "bedrock", "anthropic")
 
 
 def model_id() -> str:
+    if _provider() == "converse":
+        return os.environ.get("REFRAME_DIRECTOR_MODEL", "qwen.qwen3-vl-235b-a22b")
     model = os.environ.get("REFRAME_DIRECTOR_MODEL", "claude-opus-5-5")
-    return ("anthropic." + model) if os.environ.get("REFRAME_DIRECTOR") == "bedrock" else model
+    return ("anthropic." + model) if _provider() == "bedrock" else model
 
 
 def _client():
-    if os.environ.get("REFRAME_DIRECTOR") == "bedrock":
+    if _provider() == "bedrock":
         from anthropic import AnthropicBedrockMantle
-        return AnthropicBedrockMantle(aws_region=os.environ.get("REFRAME_DIRECTOR_REGION", "us-east-1"))
+        return AnthropicBedrockMantle(aws_region=_region())
     from anthropic import Anthropic
     return Anthropic()
 
 
 def _ask(sheets: list[bytes], shot_list: str) -> str:
-    import anthropic
+    if _provider() == "converse":
+        return _ask_converse(sheets, shot_list)
+    return _ask_claude(sheets, shot_list)
 
+
+def _ask_converse(sheets: list[bytes], shot_list: str) -> str:
+    """Any Bedrock model that takes images, through the Converse API."""
+    import boto3
+
+    content: list[dict] = []
+    for i, jpg in enumerate(sheets):
+        content.append({"text": f"Contact sheet {i + 1} of {len(sheets)}:"})
+        content.append({"image": {"format": "jpeg", "source": {"bytes": jpg}}})
+    content.append({"text": f"Shots to decide (letters available per shot):\n{shot_list}"})
+    response = boto3.client("bedrock-runtime", region_name=_region()).converse(
+        modelId=model_id(),
+        system=[{"text": SYSTEM}],
+        messages=[{"role": "user", "content": content}],
+        inferenceConfig={"maxTokens": 4000},
+    )
+    if response.get("stopReason") in ("content_filtered", "guardrail_intervened"):
+        raise RuntimeError("the model declined")
+    if response.get("stopReason") == "max_tokens":
+        raise RuntimeError("the reply was cut off")
+    return "".join(block.get("text", "") for block in response["output"]["message"]["content"])
+
+
+def _ask_claude(sheets: list[bytes], shot_list: str) -> str:
     content: list[dict] = []
     for i, jpg in enumerate(sheets):
         content.append({"type": "text", "text": f"Contact sheet {i + 1} of {len(sheets)}:"})
