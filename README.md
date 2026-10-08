@@ -21,7 +21,16 @@ Plan and quality targets: "Reframe Engine v2" (Shotline plan page, 8 Oct 2026).
 | Engine | `engine.py` | `analyze(path)` once per file, `plan(analysis, "1:1")` per shape; segments in full-frame coordinates |
 | Render | `render.py` | Preview renderer for review and tests (production renders in Remotion from the same segments) |
 
-## Run
+## Service
+
+```bash
+REFRAME_SERVICE_TOKEN=… REFRAME_ALLOWED_HOSTS=cdn.example.com,bucket.s3.amazonaws.com \
+  .venv/bin/uvicorn reframe.service:app --port 8090
+```
+
+`POST /analyses` → `GET /analyses/{id}` (stage, progress, detected text) → `POST /analyses/{id}/plan` (ratio, zoom, keepText, outputHeight). See `reframe/service.py` for details. For local development without a token: `REFRAME_DEV=1`.
+
+## Run the engine directly
 
 ```bash
 python3.12 -m venv .venv && .venv/bin/pip install -r requirements.txt

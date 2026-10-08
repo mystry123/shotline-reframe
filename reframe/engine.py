@@ -42,34 +42,58 @@ class Analysis:
     timings: dict[str, float]
 
 
-def analyze(path: str, words: list[dict] | None = None, quality: str = "standard") -> Analysis:
+# Rough share of analysis time per stage, for progress reporting.
+STAGES = [("probe", "Reading the video", 0.05), ("shots", "Finding cuts", 0.15), ("faces", "Finding faces", 0.25),
+          ("tracks", "Tracking people", 0.05), ("people", "Checking who is a person", 0.35),
+          ("content", "Finding the content", 0.1), ("speakers", "Matching voices", 0.05)]
+
+
+def analyze(path: str, words: list[dict] | None = None, quality: str = "standard",
+            on_stage=None) -> Analysis:
+    """`on_stage(key, label, progress)` is called as each stage starts
+    (progress 0..1), for job status reporting."""
+    done = 0.0
+
+    def stage(key: str) -> None:
+        nonlocal done
+        for k, label, share in STAGES:
+            if k == key:
+                if on_stage:
+                    on_stage(k, label, round(done, 3))
+                done += share
+                return
     """`words`: the transcript's words with speaker labels (ElevenLabs shape),
     when there is one; without it, layouts are decided from the picture only."""
     timings: dict[str, float] = {}
     t0 = time.perf_counter()
+    stage("probe")
     info = probe(path)
     area = find_picture_area(info)
     text = detect_text_bands(info, area)
     timings["probe"] = time.perf_counter() - t0
 
     t0 = time.perf_counter()
+    stage("shots")
     cut_frames = decode(info, area, fps=info.fps, max_width=320)
     shots = detect_shots(cut_frames, info.duration)
     timings["shots"] = time.perf_counter() - t0
 
     t0 = time.perf_counter()
+    stage("faces")
     q = QUALITY[quality]
     frames = decode(info, area, fps=q["fps"], max_width=q["width"], upscale_to=q["width"])
     faces = FaceDetector().detect(frames)
     timings["faces"] = time.perf_counter() - t0
 
     t0 = time.perf_counter()
+    stage("tracks")
     tracks = {s.index: track_shot(s, faces, frames.fps) for s in shots}
     timings["tracks"] = time.perf_counter() - t0
 
     # People check: a body for each face (about once a second), and whether
     # the face image changes over time.
     t0 = time.perf_counter()
+    stage("people")
     every = max(1, int(round(frames.fps)))
     bodies = BodyDetector().detect(frames, every=every)
     mark_checked(bodies, set(range(0, len(frames.data), every)))
@@ -79,10 +103,12 @@ def analyze(path: str, words: list[dict] | None = None, quality: str = "standard
 
     # Where the content is, for shots without people.
     t0 = time.perf_counter()
+    stage("content")
     content = content_boxes(frames)
     timings["content"] = time.perf_counter() - t0
 
     t0 = time.perf_counter()
+    stage("speakers")
     describe_tracks(tracks, frames)
     person_of = group_people(tracks)
     turns = load_turns(words or [])
