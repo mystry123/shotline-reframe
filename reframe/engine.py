@@ -13,18 +13,17 @@ import time
 from dataclasses import dataclass, asdict
 
 from .decode import decode
+from .bodies import BodyDetector
 from .faces import FaceDetector
 from .layout import Segment, plan_shot
 from .probe import Rect, VideoInfo, find_picture_area, probe
 from .shots import Shot, detect_shots
+from .options import QUALITY, Options
 from .overlays import TextBand, detect_text_bands
 from .speakers import People, Turn, active_person, describe_tracks, group_people, load_turns, map_speakers
-from .tracks import Track, track_shot
+from .tracks import Track, classify, mark_checked, track_shot
 
 ENGINE_VERSION = "2.0.0-dev"
-ANALYSIS_FPS = 5.0
-MAX_UPSCALE = 2.5          # never magnify the source more than this
-OUTPUT_HEIGHT = 1080
 
 
 @dataclass
@@ -36,10 +35,12 @@ class Analysis:
     turns: list[Turn]
     people: People
     text: list[TextBand]
+    quality: str
+    fps: float
     timings: dict[str, float]
 
 
-def analyze(path: str, words: list[dict] | None = None) -> Analysis:
+def analyze(path: str, words: list[dict] | None = None, quality: str = "standard") -> Analysis:
     """`words`: the transcript's words with speaker labels (ElevenLabs shape),
     when there is one; without it, layouts are decided from the picture only."""
     timings: dict[str, float] = {}
@@ -55,7 +56,8 @@ def analyze(path: str, words: list[dict] | None = None) -> Analysis:
     timings["shots"] = time.perf_counter() - t0
 
     t0 = time.perf_counter()
-    frames = decode(info, area, fps=ANALYSIS_FPS, max_width=640, upscale_to=640)
+    q = QUALITY[quality]
+    frames = decode(info, area, fps=q["fps"], max_width=q["width"], upscale_to=q["width"])
     faces = FaceDetector().detect(frames)
     timings["faces"] = time.perf_counter() - t0
 
@@ -63,13 +65,23 @@ def analyze(path: str, words: list[dict] | None = None) -> Analysis:
     tracks = {s.index: track_shot(s, faces, frames.fps) for s in shots}
     timings["tracks"] = time.perf_counter() - t0
 
+    # People check: a body for each face (about once a second), and whether
+    # the face image changes over time.
+    t0 = time.perf_counter()
+    every = max(1, int(round(frames.fps)))
+    bodies = BodyDetector().detect(frames, every=every)
+    mark_checked(bodies, set(range(0, len(frames.data), every)))
+    for shot_tracks in tracks.values():
+        classify(shot_tracks, frames, bodies)
+    timings["people"] = time.perf_counter() - t0
+
     t0 = time.perf_counter()
     describe_tracks(tracks, frames)
     person_of = group_people(tracks)
     turns = load_turns(words or [])
     people = map_speakers(turns, shots, tracks, person_of)
     timings["speakers"] = time.perf_counter() - t0
-    return Analysis(info, area, shots, tracks, turns, people, text, timings)
+    return Analysis(info, area, shots, tracks, turns, people, text, quality, q["fps"], timings)
 
 
 def parse_ratio(ratio: str) -> float:
@@ -116,14 +128,16 @@ def _place_text(band: TextBand, info: VideoInfo, target: float) -> dict:
     }
 
 
-def plan(analysis: Analysis, ratio: str, keep_text: list[str] | None = None) -> dict:
+def plan(analysis: Analysis, ratio: str, keep_text: list[str] | None = None,
+         options: Options | None = None) -> dict:
     """`keep_text`: ids of detected burned-in text (from result["text"]) the
     user chose to keep; everything else outside the picture is dropped."""
     target = parse_ratio(ratio)
     area = analysis.area
     pic_aspect = area.w / area.h
-    # Resolution limit: don't zoom so far that the crop is magnified past MAX_UPSCALE.
-    min_crop_h = min(1.0, max(0.35, OUTPUT_HEIGHT / (area.h * MAX_UPSCALE)))
+    options = options or Options(quality=analysis.quality)
+    # How far the camera may zoom in: plan output resolution + the user's zoom choice.
+    min_crop_h = options.min_crop_height(area.h)
     segments = []
     for s in analysis.shots:
         shot_tracks = analysis.tracks[s.index]
@@ -134,13 +148,15 @@ def plan(analysis: Analysis, ratio: str, keep_text: list[str] | None = None) -> 
                 return None
             return next((tr for tr in shot_tracks if analysis.people.person_of.get((s.index, tr.track_id)) == pid), None)
 
-        segments.extend(plan_shot(s, shot_tracks, target, pic_aspect, ANALYSIS_FPS, min_crop_h, speaking))
+        segments.extend(plan_shot(s, shot_tracks, target, pic_aspect, analysis.fps, min_crop_h, speaking))
     return {
         "engine": ENGINE_VERSION,
         "source": {"width": analysis.info.width, "height": analysis.info.height, "duration": analysis.info.duration,
                    "fps": analysis.info.fps, "picture": asdict(area)},
         "target": ratio,
-        "notes": (["Low-resolution source: no zooming in, to keep it sharp."] if min_crop_h >= 1.0 else []),
+        "settings": {"quality": analysis.quality, "outputHeight": options.output_height, "zoom": options.zoom},
+        "notes": ([f"Low-resolution source for {options.output_height}p output: no zooming in, to keep it sharp. "
+                   "Choose tighter framing to zoom in anyway."] if min_crop_h >= 1.0 else []),
         "speakers": {spk: {"person": pid, "confidence": round(analysis.people.confidence.get(spk, 0), 2)}
                      for spk, pid in analysis.people.speaker_person.items()},
         "segments": [_to_frame(s, analysis.info, area) for s in segments],

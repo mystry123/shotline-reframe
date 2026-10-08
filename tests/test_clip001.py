@@ -87,3 +87,21 @@ def test_text_is_dropped_unless_the_user_keeps_it(analysis):
     assert [o["id"] for o in kept["overlays"]] == ["bottom-captions"]
     p = kept["overlays"][0]["placement"]
     assert 0 <= p["left"] and p["left"] + p["width"] <= 1 and p["top"] + p["height"] <= 0.9  # above platform UI
+
+
+@pytest.mark.parametrize("quality", ["high", "max"])
+def test_every_quality_level_finds_the_same_people(analysis, quality):
+    """Higher quality refines framing; it must never change who is a person."""
+    other = analyze(VIDEO, WORDS, quality=quality)
+    def people(a):
+        return {s: sorted(round(t.median("cx"), 1) for t in ts if t.is_person) for s, ts in a.tracks.items()}
+    assert people(other) == people(analysis)
+    assert other.people.speaker_person == analysis.people.speaker_person
+
+
+def test_zoom_choice_controls_how_tight_small_subjects_get(analysis):
+    from reframe.options import Options
+    wide = lambda zoom: plan(analysis, "1:1", options=Options(zoom=zoom))["segments"][5]["zones"][0]["keyframes"][0]["h"]
+    assert wide("sharp") == wide("balanced")      # low-res source: no zoom
+    assert wide("tight") == pytest.approx(wide("balanced") / 2, rel=0.02)
+    assert plan(analysis, "1:1", options=Options(zoom="tight"))["notes"] == []

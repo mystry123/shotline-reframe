@@ -3,13 +3,18 @@
 Tracking: ByteTrack (supervision, MIT) over face boxes, reset at every cut,
 so identities never leak across shots.
 
-Real-person filter. A face detector also fires on paintings, photos,
-ornaments, people on screens and hands. Score alone can't separate them (a
-real profile can score lower than a painted face), so each track gets:
-- presence: share of the shot it's visible (one-frame hands drop out);
-- liveness: real heads drift and their landmarks change (talking, blinking,
-  turning); a painting or object is pixel-still for the whole shot;
-- prominence: size relative to the largest live face in the shot.
+Real-person test. A face detector also fires on paintings, photos,
+ornaments, lamps and hands, and no single signal separates them at every
+analysis quality (detector boxes wander on non-faces, so box motion looks
+"alive"; a real profile can score lower than a painted face). Combined:
+- presence:  share of the shot it's visible (a one-frame hand drops out);
+- body:      a person detector (YOLOX) finds a body the face belongs to
+             (ornaments, lamps and patterns have none);
+- change:    the image inside the face changes from second to second
+             (talking, blinking, turning); a painting or photo doesn't,
+             even when it has a painted body.
+Very large faces (extreme close-ups, body out of frame) count as people
+on change alone.
 """
 
 from __future__ import annotations
@@ -25,6 +30,10 @@ import supervision as sv
 # below 0.31 until we evaluate that package.
 warnings.filterwarnings("ignore", category=FutureWarning, module="supervision")
 
+import cv2
+
+from .bodies import BodyDet
+from .decode import Frames
 from .faces import FaceDet
 from .shots import Shot
 
@@ -34,7 +43,8 @@ class Track:
     shot: int
     track_id: int
     dets: list[FaceDet] = field(default_factory=list)
-    liveness: float = 0.0
+    liveness: float = 0.0      # image change inside the face, 1 s apart
+    body: float = 0.0          # share of checked frames where a body holds this face
     presence: float = 0.0
     is_person: bool = False
     reason: str = ""
@@ -47,21 +57,75 @@ class Track:
         return float(np.median([getattr(d, attr) for d in self.dets]))
 
 
-def _liveness(dets: list[FaceDet]) -> float:
-    """How much a face moves and changes shape, in % of face size.
-    ~0 for paintings/objects (only compression noise); real people are higher."""
-    if len(dets) < 3:
-        return 0.0
-    size = np.median([d.h for d in dets])
-    centers = np.array([[d.cx, d.cy] for d in dets])
-    # Landmarks relative to the box: changes with expression and head turns.
-    shape = np.array([((d.landmarks - [d.x, d.y]) / [d.w, d.h]).ravel() for d in dets])
-    drift = np.linalg.norm(np.diff(centers, axis=0), axis=1).mean() / max(size, 1e-6)
-    deform = np.abs(np.diff(shape, axis=0)).mean()
-    # Box size is left out on purpose: detections of non-faces flicker in size,
-    # which would read as "alive". Real people score ~1.7+ on drift + deform,
-    # paintings and ornaments under ~0.3 (test clip 001).
-    return float(100 * (drift + deform))
+def _face_patch(frames: Frames, d: FaceDet, size: int = 24) -> np.ndarray | None:
+    img = frames.data[d.frame]
+    H, W = img.shape[:2]
+    x0, y0 = max(0, int(d.x * W)), max(0, int(d.y * H))
+    x1, y1 = min(W, int((d.x + d.w) * W)), min(H, int((d.y + d.h) * H))
+    if x1 - x0 < 4 or y1 - y0 < 4:
+        return None
+    g = cv2.resize(cv2.cvtColor(img[y0:y1, x0:x1], cv2.COLOR_BGR2GRAY), (size, size), interpolation=cv2.INTER_AREA).astype(np.float32)
+    return (g - g.mean()) / (g.std() + 1e-3)
+
+
+def _image_change(t: "Track", frames: Frames) -> float | None:
+    """Mean change of the normalized face image over about 1 second
+    (rate-independent). None when the track is too short to tell."""
+    lag = max(1, int(round(frames.fps)))
+    patches = [_face_patch(frames, d) for d in t.dets]
+    pairs = [(patches[i], patches[i + lag]) for i in range(len(patches) - lag)
+             if patches[i] is not None and patches[i + lag] is not None
+             and abs(t.dets[i + lag].time - t.dets[i].time - 1.0) < 0.5]
+    if len(pairs) < 2:
+        return None
+    return float(np.mean([np.abs(a - b).mean() for a, b in pairs]))
+
+
+def _head_score(d: FaceDet, b: BodyDet) -> float | None:
+    """How well face `d` fits as the head of body `b` (None if it can't be):
+    centred horizontally and in the top part of the box, at a plausible
+    face-to-body width."""
+    rel_x = (d.cx - b.x) / max(b.w, 1e-6)
+    rel_y = (d.cy - b.y) / max(b.h, 1e-6)
+    ratio = d.w / max(b.w, 1e-6)
+    if not (0.1 <= rel_x <= 0.9 and -0.1 <= rel_y <= 0.45 and 0.08 <= ratio <= 0.9):
+        return None
+    return d.h  # the biggest face that fits is the head; ties are rare
+
+
+def _body_shares(tracks: list["Track"], bodies: list[list[BodyDet]]) -> dict[int, float]:
+    """Per track: share of body-checked frames where a body claims this face
+    as its head. Each body claims at most one face, so an object next to a
+    person (inside their box) doesn't borrow their body."""
+    by_frame: dict[int, list[tuple["Track", FaceDet]]] = {}
+    for t in tracks:
+        for d in t.dets:
+            by_frame.setdefault(d.frame, []).append((t, d))
+    checked = {id(t): 0 for t in tracks}
+    held = {id(t): 0 for t in tracks}
+    for frame, items in by_frame.items():
+        if frame >= len(bodies) or not _was_checked(bodies, frame):
+            continue
+        for t, _ in items:
+            checked[id(t)] += 1
+        for b in bodies[frame]:
+            scored = [(sc, t) for t, d in items if (sc := _head_score(d, b)) is not None]
+            if scored:
+                held[id(max(scored, key=lambda x: x[0])[1])] += 1
+    return {id(t): (held[id(t)] / checked[id(t)] if checked[id(t)] else 0.0) for t in tracks}
+
+
+_CHECKED: dict[int, set[int]] = {}
+
+
+def _was_checked(bodies: list[list[BodyDet]], frame: int) -> bool:
+    return frame in _CHECKED.get(id(bodies), set())
+
+
+def mark_checked(bodies: list[list[BodyDet]], frames: set[int]) -> None:
+    """Record which frames the body detector ran on (empty lists there mean
+    "no body", elsewhere they mean "not checked")."""
+    _CHECKED[id(bodies)] = frames
 
 
 def track_shot(shot: Shot, faces_per_frame: list[list[FaceDet]], fps: float) -> list[Track]:
@@ -99,25 +163,39 @@ def track_shot(shot: Shot, faces_per_frame: list[list[FaceDet]], fps: float) -> 
     out = list(tracks.values())
     for t in out:
         t.presence = len(t.dets) / frames_in_shot
-        t.liveness = _liveness(t.dets)
-    _classify(out)
     return out
 
 
-# Thresholds tuned on the test set; see tests/.
+# Thresholds from test clip 001 (all three analysis qualities); see tests/.
 MIN_PRESENCE = 0.25
-MIN_LIVENESS = 0.8
+MIN_CHANGE = 0.10            # paintings/photos 0.00-0.07; real faces 0.15+
+MIN_BODY = 0.5
+CLOSE_UP = 0.35              # face height (share of picture) where the body may be out of frame
 MIN_RELATIVE_SIZE = 0.15
 
 
-def _classify(tracks: list[Track]) -> None:
-    live = [t for t in tracks if t.liveness >= MIN_LIVENESS and t.presence >= MIN_PRESENCE]
-    biggest = max((t.median("h") for t in live), default=0.0)
+def classify(tracks: list[Track], frames: Frames, bodies: list[list[BodyDet]]) -> None:
+    shares = _body_shares(tracks, bodies)
+    changes: dict[int, float | None] = {}
+    for t in tracks:
+        changes[id(t)] = _image_change(t, frames)
+        t.liveness = changes[id(t)] if changes[id(t)] is not None else -1.0
+        t.body = shares[id(t)]
+
+    def changes_enough(t: Track) -> bool:
+        c = changes[id(t)]
+        return c is None or c >= MIN_CHANGE  # too short to tell: don't reject on this
+
+    candidates = [t for t in tracks if t.presence >= MIN_PRESENCE and changes_enough(t)
+                  and (t.body >= MIN_BODY or t.median("h") >= CLOSE_UP)]
+    biggest = max((t.median("h") for t in candidates), default=0.0)
     for t in tracks:
         if t.presence < MIN_PRESENCE:
             t.reason = f"brief ({t.presence:.0%} of shot)"
-        elif t.liveness < MIN_LIVENESS:
-            t.reason = f"still ({t.liveness:.2f}): painting, photo or object"
+        elif t.body < MIN_BODY and t.median("h") < CLOSE_UP:
+            t.reason = f"no body ({t.body:.0%}): an object, not a person"
+        elif not changes_enough(t):
+            t.reason = f"image doesn't change ({t.liveness:.2f}): painting or photo"
         elif biggest and t.median("h") < MIN_RELATIVE_SIZE * biggest:
             t.reason = "tiny next to the main faces"
         else:
