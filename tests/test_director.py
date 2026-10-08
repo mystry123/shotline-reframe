@@ -96,3 +96,27 @@ def test_converse_request_shape(analysis, options, monkeypatch):
     assert summary["used"] and summary["model"] == "amazon.nova-pro-v1:0"
     images = [c for c in sent["messages"][0]["content"] if "image" in c]
     assert images and all(c["image"]["source"]["bytes"][:2] == b"\xff\xd8" for c in images)
+
+
+def test_gemini_request_shape(analysis, options, monkeypatch):
+    """The Gemini path sends the sheets inline with a reply schema, and reports HTTP errors."""
+    import httpx
+
+    sent = {}
+
+    def fake_post(url, headers, json, timeout):
+        sent.update(url=url, body=json)
+        reply = {"candidates": [{"finishReason": "STOP", "content": {"parts": [{"text": '{"shots": []}'}]}}]}
+        return httpx.Response(200, json=reply)
+
+    monkeypatch.setenv("REFRAME_DIRECTOR", "gemini")
+    monkeypatch.setenv("GEMINI_API_KEY", "test-key")
+    monkeypatch.setattr(httpx, "post", fake_post)
+    summary = director.direct(analysis, options, parse_ratio("2:3"))
+    assert summary["used"] and sent["url"].endswith(f"/models/{director.model_id()}:generateContent")
+    assert sent["body"]["generationConfig"]["responseMimeType"] == "application/json"
+    assert any("inline_data" in p for p in sent["body"]["contents"][0]["parts"])
+
+    monkeypatch.setattr(httpx, "post", lambda *a, **k: httpx.Response(402, json={"error": {"message": "credits depleted"}}))
+    summary = director.direct(analysis, options, parse_ratio("2:3"))
+    assert not summary["used"] and "402" in summary["error"]

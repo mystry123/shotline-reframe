@@ -12,12 +12,14 @@ break a plan.
 
 Environment:
     REFRAME_DIRECTOR         off (default)
+                             gemini     Google Gemini (GEMINI_API_KEY)
                              converse   any vision model on Amazon Bedrock (Converse API):
                                         Amazon Nova, Qwen3-VL, OpenAI, Mistral, Gemma, …
                              bedrock    Claude on Amazon Bedrock
                              anthropic  Claude on the Claude API
-    REFRAME_DIRECTOR_MODEL   model or inference-profile id. Defaults: converse →
-                             qwen.qwen3-vl-235b-a22b; bedrock/anthropic → claude-opus-5-5
+    REFRAME_DIRECTOR_MODEL   model or inference-profile id. Defaults: gemini →
+                             gemini-3.8-flash; converse → qwen.qwen3-vl-235b-a22b;
+                             bedrock/anthropic → claude-opus-5-5
                              (the Bedrock "anthropic." prefix is added automatically)
     REFRAME_DIRECTOR_REGION  AWS region for Bedrock (default ap-south-1)
 """
@@ -165,10 +167,12 @@ def _region() -> str:
 
 
 def configured() -> bool:
-    return _provider() in ("converse", "bedrock", "anthropic")
+    return _provider() in ("gemini", "converse", "bedrock", "anthropic")
 
 
 def model_id() -> str:
+    if _provider() == "gemini":
+        return os.environ.get("REFRAME_DIRECTOR_MODEL", "gemini-3.8-flash")
     if _provider() == "converse":
         return os.environ.get("REFRAME_DIRECTOR_MODEL", "qwen.qwen3-vl-235b-a22b")
     model = os.environ.get("REFRAME_DIRECTOR_MODEL", "claude-opus-5-5")
@@ -184,9 +188,47 @@ def _client():
 
 
 def _ask(sheets: list[bytes], shot_list: str) -> str:
+    if _provider() == "gemini":
+        return _ask_gemini(sheets, shot_list)
     if _provider() == "converse":
         return _ask_converse(sheets, shot_list)
     return _ask_claude(sheets, shot_list)
+
+
+# The reply shape, enforced by Gemini's structured output.
+REPLY_SCHEMA = {"type": "object", "required": ["shots"], "properties": {"shots": {"type": "array", "items": {
+    "type": "object", "required": ["shot", "choice", "confidence", "reason"], "properties": {
+        "shot": {"type": "integer"}, "choice": {"type": "string"}, "confidence": {"type": "number"},
+        "reason": {"type": "string"}}}}}}
+
+
+def _ask_gemini(sheets: list[bytes], shot_list: str) -> str:
+    """Google Gemini through its REST API (GEMINI_API_KEY)."""
+    import httpx
+
+    key = os.environ.get("GEMINI_API_KEY", "")
+    if not key:
+        raise RuntimeError("GEMINI_API_KEY is not set")
+    parts: list[dict] = []
+    for i, jpg in enumerate(sheets):
+        parts.append({"text": f"Contact sheet {i + 1} of {len(sheets)}:"})
+        parts.append({"inline_data": {"mime_type": "image/jpeg", "data": base64.standard_b64encode(jpg).decode()}})
+    parts.append({"text": f"Shots to decide (letters available per shot):\n{shot_list}"})
+    response = httpx.post(
+        f"https://generativelanguage.googleapis.com/v1beta/models/{model_id()}:generateContent",
+        headers={"x-goog-api-key": key},
+        json={"system_instruction": {"parts": [{"text": SYSTEM}]},
+              "contents": [{"role": "user", "parts": parts}],
+              "generationConfig": {"responseMimeType": "application/json", "responseJsonSchema": REPLY_SCHEMA}},
+        timeout=120,
+    )
+    if response.status_code != 200:
+        message = response.json().get("error", {}).get("message", "") if response.content else ""
+        raise RuntimeError(f"Gemini HTTP {response.status_code}: {message[:150]}")
+    candidate = (response.json().get("candidates") or [{}])[0]
+    if candidate.get("finishReason") not in (None, "STOP"):
+        raise RuntimeError(f"Gemini stopped: {candidate.get('finishReason')}")
+    return "".join(p.get("text", "") for p in candidate.get("content", {}).get("parts", []) if not p.get("thought"))
 
 
 def _ask_converse(sheets: list[bytes], shot_list: str) -> str:
