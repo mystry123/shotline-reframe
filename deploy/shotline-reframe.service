@@ -1,0 +1,25 @@
+[Unit]
+Description=shotline-reframe (video reframe engine)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=reframe
+Group=reframe
+WorkingDirectory=/opt/shotline-reframe/app
+# Settings and secrets live on the VM only (not in the repo).
+EnvironmentFile=/etc/shotline-reframe/env
+ExecStart=/opt/shotline-reframe/app/.venv/bin/uvicorn reframe.service:app --host ${REFRAME_HOST} --port ${REFRAME_PORT} --no-access-log
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=30
+# Hardening: the service only needs its cache and a temp dir.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
+ReadWritePaths=/var/lib/shotline-reframe
+
+[Install]
+WantedBy=multi-user.target

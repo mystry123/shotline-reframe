@@ -1,0 +1,70 @@
+name: Deploy
+
+# Production deploys to the shotline-reframe VM:
+# - automatically, after CI passes for a push to main;
+# - manually (Actions → Deploy → Run workflow on main), to redeploy or roll
+#   back to a chosen commit of main.
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      sha:
+        description: "Commit of main to deploy (full or short SHA)"
+        required: true
+
+permissions:
+  contents: read
+  id-token: write   # OIDC token for Workload Identity Federation
+
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+
+env:
+  PROJECT: shotline-511017
+  ZONE: asia-south1-a
+  VM: shotline-reframe
+  # Not secrets: resource names. Access is limited by the federation's
+  # attribute condition (this repo, main only) and the deployer's roles.
+  WIF_PROVIDER: projects/394238727487/locations/global/workloadIdentityPools/github/providers/shotline-reframe
+  DEPLOYER: reframe-deployer@shotline-511017.iam.gserviceaccount.com
+
+jobs:
+  deploy:
+    if: >-
+      github.ref == 'refs/heads/main' && (
+        github.event_name == 'workflow_dispatch' ||
+        (github.event.workflow_run.conclusion == 'success' &&
+         github.event.workflow_run.event == 'push' &&
+         github.event.workflow_run.head_branch == 'main'))
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Commit to deploy
+        id: commit
+        env:
+          INPUT_SHA: ${{ inputs.sha }}
+          RUN_SHA: ${{ github.event.workflow_run.head_sha }}
+        run: |
+          sha="${INPUT_SHA:-$RUN_SHA}"
+          if [[ ! "$sha" =~ ^[0-9a-f]{7,40}$ ]]; then echo "Not a commit SHA: $sha"; exit 1; fi
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+          echo "Deploying $sha" >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ env.WIF_PROVIDER }}
+          service_account: ${{ env.DEPLOYER }}
+
+      - uses: google-github-actions/setup-gcloud@v2
+
+      # SSH over IAP with OS Login as the deployer; it may only run the
+      # deploy entry point, which checks the commit is on main.
+      - name: Deploy on the VM
+        run: |
+          gcloud compute ssh "$VM" --zone "$ZONE" --project "$PROJECT" \
+            --tunnel-through-iap --quiet \
+            --command "sudo /usr/local/bin/shotline-deploy ${{ steps.commit.outputs.sha }}"
