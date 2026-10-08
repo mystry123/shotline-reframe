@@ -46,6 +46,29 @@ def _fit_over_blur(src: np.ndarray, out_w: int, out_h: int) -> np.ndarray:
     return bg
 
 
+def _overlay_text(canvas: np.ndarray, frame: np.ndarray, ov: dict) -> None:
+    """Lift burned-in text off its dark background and lay it over the canvas,
+    keeping its colours."""
+    H, W = frame.shape[:2]
+    oh, ow = canvas.shape[:2]
+    s, p = ov["source"], ov["placement"]
+    src = frame[int(s["y"] * H):int((s["y"] + s["h"]) * H), int(s["x"] * W):int((s["x"] + s["w"]) * W)]
+    tw, th = max(1, int(p["width"] * ow)), max(1, int(p["height"] * oh))
+    tx, ty = int(p["left"] * ow), int(p["top"] * oh)
+    text = cv2.resize(src, (tw, th), interpolation=cv2.INTER_CUBIC).astype(np.float32)
+    # Alpha from brightness: the dark background goes transparent, soft edges stay soft.
+    luma = text.max(axis=2)  # max channel keeps saturated colours (red, teal) opaque
+    alpha = np.clip((luma - 30.0) / 50.0, 0, 1)
+    # A soft shadow keeps light text readable over light parts of the video
+    # (on the original black bars it didn't need one).
+    radius = max(2, th // 40)
+    shadow = cv2.GaussianBlur(cv2.dilate(alpha, np.ones((radius * 2 + 1,) * 2, np.uint8)), (0, 0), radius)
+    region = canvas[ty:ty + th, tx:tx + tw].astype(np.float32)
+    region *= (1 - 0.65 * shadow)[..., None]
+    a = alpha[..., None]
+    canvas[ty:ty + th, tx:tx + tw] = (a * text + (1 - a) * region).astype(np.uint8)
+
+
 def render(source: str, result: dict, out_path: str, out_h: int = 720) -> None:
     src = result["source"]
     W, H, fps = src["width"], src["height"], src["fps"]
@@ -85,6 +108,8 @@ def render(source: str, result: dict, out_path: str, out_h: int = 720) -> None:
                 canvas[zy:zy + zh, zx:zx + zw] = cv2.resize(crop, (zw, zh), interpolation=cv2.INTER_CUBIC)
         if len(seg["zones"]) == 2:  # thin divider between split zones
             canvas[out_h // 2 - 1:out_h // 2 + 1] = 0
+        for ov in result.get("overlays", []):
+            _overlay_text(canvas, frame, ov)
         writer.stdin.write(canvas.tobytes())  # type: ignore[union-attr]
         i += 1
     writer.stdin.close()  # type: ignore[union-attr]

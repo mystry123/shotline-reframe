@@ -69,3 +69,21 @@ def test_portrait_targets_hold_still_and_step_at_cuts(analysis, ratio):
         kfs = s["zones"][0]["keyframes"]
         assert len({(k["w"], k["h"]) for k in kfs}) == 1          # no zoom change inside a shot
         assert kfs[0]["t"] == s["start"] and kfs[-1]["t"] == s["end"]  # framing changes only at cuts
+
+
+def test_finds_the_burned_in_title_and_captions(analysis):
+    found = {t.id: t for t in analysis.text}
+    assert set(found) == {"top-title", "bottom-captions"}
+    assert found["top-title"].kind == "title" and found["top-title"].active < 0.15   # first ~3 s only
+    assert found["bottom-captions"].kind == "captions" and found["bottom-captions"].active > 0.7
+    assert all(t.keyable for t in analysis.text)
+
+
+def test_text_is_dropped_unless_the_user_keeps_it(analysis):
+    dropped = plan(analysis, "1:1")
+    assert [t["id"] for t in dropped["text"]] == ["top-title", "bottom-captions"]
+    assert dropped["overlays"] == []
+    kept = plan(analysis, "1:1", keep_text=["bottom-captions"])
+    assert [o["id"] for o in kept["overlays"]] == ["bottom-captions"]
+    p = kept["overlays"][0]["placement"]
+    assert 0 <= p["left"] and p["left"] + p["width"] <= 1 and p["top"] + p["height"] <= 0.9  # above platform UI

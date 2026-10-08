@@ -17,6 +17,7 @@ from .faces import FaceDetector
 from .layout import Segment, plan_shot
 from .probe import Rect, VideoInfo, find_picture_area, probe
 from .shots import Shot, detect_shots
+from .overlays import TextBand, detect_text_bands
 from .speakers import People, Turn, active_person, describe_tracks, group_people, load_turns, map_speakers
 from .tracks import Track, track_shot
 
@@ -34,6 +35,7 @@ class Analysis:
     tracks: dict[int, list[Track]]
     turns: list[Turn]
     people: People
+    text: list[TextBand]
     timings: dict[str, float]
 
 
@@ -44,6 +46,7 @@ def analyze(path: str, words: list[dict] | None = None) -> Analysis:
     t0 = time.perf_counter()
     info = probe(path)
     area = find_picture_area(info)
+    text = detect_text_bands(info, area)
     timings["probe"] = time.perf_counter() - t0
 
     t0 = time.perf_counter()
@@ -66,7 +69,7 @@ def analyze(path: str, words: list[dict] | None = None) -> Analysis:
     turns = load_turns(words or [])
     people = map_speakers(turns, shots, tracks, person_of)
     timings["speakers"] = time.perf_counter() - t0
-    return Analysis(info, area, shots, tracks, turns, people, timings)
+    return Analysis(info, area, shots, tracks, turns, people, text, timings)
 
 
 def parse_ratio(ratio: str) -> float:
@@ -88,7 +91,34 @@ def _to_frame(seg: Segment, info: VideoInfo, area: Rect) -> dict:
     return {"start": round(seg.start, 3), "end": round(seg.end, 3), "layout": seg.layout, "reason": seg.reason, "zones": zones}
 
 
-def plan(analysis: Analysis, ratio: str) -> dict:
+# Where kept text goes in the new frame (share of output height): titles near
+# the top, captions in the lower third but above the area TikTok/Reels/Shorts
+# cover with their buttons and descriptions.
+TEXT_PLACEMENT = {"title": {"center": 0.09, "max_h": 0.12}, "captions": {"center": 0.72, "max_h": 0.28}}
+TEXT_MAX_W = 0.9
+
+
+def _place_text(band: TextBand, info: VideoInfo, target: float) -> dict:
+    spec = TEXT_PLACEMENT[band.kind]
+    aspect = band.rect.w / band.rect.h                      # source pixels
+    h = spec["max_h"]
+    w = h * aspect / target                                 # output-normalized (w/h are fractions of each axis)
+    if w > TEXT_MAX_W:
+        w = TEXT_MAX_W
+        h = w * target / aspect
+    return {
+        "id": band.id,
+        "source": {"x": round(band.rect.x / info.width, 5), "y": round(band.rect.y / info.height, 5),
+                   "w": round(band.rect.w / info.width, 5), "h": round(band.rect.h / info.height, 5)},
+        "placement": {"left": round((1 - w) / 2, 4), "top": round(spec["center"] - h / 2, 4),
+                      "width": round(w, 4), "height": round(h, 4)},
+        "key": "dark",   # make the dark background transparent
+    }
+
+
+def plan(analysis: Analysis, ratio: str, keep_text: list[str] | None = None) -> dict:
+    """`keep_text`: ids of detected burned-in text (from result["text"]) the
+    user chose to keep; everything else outside the picture is dropped."""
     target = parse_ratio(ratio)
     area = analysis.area
     pic_aspect = area.w / area.h
@@ -114,4 +144,10 @@ def plan(analysis: Analysis, ratio: str) -> dict:
         "speakers": {spk: {"person": pid, "confidence": round(analysis.people.confidence.get(spk, 0), 2)}
                      for spk, pid in analysis.people.speaker_person.items()},
         "segments": [_to_frame(s, analysis.info, area) for s in segments],
+        # Burned-in text found outside the picture: the editor asks whether to
+        # keep it (default: drop; suggest Shotline captions when not keyable).
+        "text": [{"id": t.id, "kind": t.kind, "region": t.region, "description": t.describe(),
+                  "onScreen": t.active, "canKeep": t.keyable} for t in analysis.text],
+        "overlays": [_place_text(t, analysis.info, target) for t in analysis.text
+                     if keep_text and t.id in keep_text and t.keyable],
     }
