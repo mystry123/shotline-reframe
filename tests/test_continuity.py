@@ -84,3 +84,9 @@ def test_split_screens_switch_by_cutting():
     segs = [_seg(0, 4), _seg(4, 8, "split", zones=2)]
     transitions(segs, cut_times=[])
     assert segs[1]["transition"] == {"type": "cut"}
+
+
+def test_shots_that_replaced_captions_and_shots_that_kept_them_are_separate_setups():
+    a, items = _analysis([(0.40, 0.15, 0.12), (0.41, 0.15, 0.12), (0.40, 0.16, 0.12)], [1, 1, 1])
+    items[0]["captions"], items[1]["captions"], items[2]["captions"] = "replaced", "kept", "replaced"
+    assert setups(a, items) == [[0, 2], [1]]

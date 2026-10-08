@@ -45,9 +45,11 @@ def setups(analysis, items: list[dict]) -> list[list[int]]:
         key = None
         if p is not None:
             pid = analysis.people.person_of.get((shot.index, p.track_id))
-            key = (pid, p.median("cx"), p.median("cy"), p.median("h"))
+            # Shots whose burned-in captions were replaced and shots that kept
+            # them can't share a framing (the union would bring the band back).
+            key = (pid, p.median("cx"), p.median("cy"), p.median("h"), item.get("captions") == "replaced")
         for g, k in zip(groups, keys):
-            if key is None or k is None:
+            if key is None or k is None or key[4] != k[4]:
                 continue
             same_person = key[0] is None or k[0] is None or key[0] == k[0]
             if (same_person and abs(key[1] - k[1]) <= SETUP_POSITION and abs(key[2] - k[2]) <= SETUP_POSITION
