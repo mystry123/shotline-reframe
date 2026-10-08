@@ -1,0 +1,9 @@
+# CPU stack, all permissively licensed (MIT / Apache-2.0 / BSD).
+numpy==2.2.6
+opencv-python-headless==5.0.0.93
+onnxruntime==1.30.0
+scenedetect==0.7.1
+# sv.ByteTrack is deprecated and removed in 0.31; pinned until we move to
+# Roboflow's `trackers` package.
+supervision==0.30.8
+scipy==1.18.1
