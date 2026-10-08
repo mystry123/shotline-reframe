@@ -1,9 +1,30 @@
 #!/usr/bin/env bash
 # Root-owned entry point for deploys (installed at /usr/local/bin/shotline-deploy).
-# The CI deployer may run only this through sudo; it validates the commit id
-# and runs the repo's deploy.sh as the `reframe` user.
+# The CI deployer may run only this through sudo.
+#
+#   shotline-deploy <sha>            deploy a commit of main (repo's deploy.sh, as `reframe`)
+#   shotline-deploy --status <sha>   0 = deployed, 1 = failed / rolled back, 10 = still running
+#
+# The deploy runs as its own systemd job, so it finishes even if the SSH
+# connection that started it drops; --status lets the caller check later.
 set -euo pipefail
-sha="${1:-}"
-[[ "$sha" =~ ^[0-9a-f]{7,40}$ ]] || { echo "usage: shotline-deploy <commit-sha>" >&2; exit 2; }
-cd /opt/shotline-reframe
-exec sudo -u reframe -H /opt/shotline-reframe/app/deploy.sh "$sha"
+LOG=/var/lib/shotline-reframe/deploys.log
+UNIT=shotline-deploy
+
+valid() { [[ "${1:-}" =~ ^[0-9a-f]{7,40}$ ]] || { echo "usage: shotline-deploy [--status] <commit-sha>" >&2; exit 2; }; }
+
+if [[ "${1:-}" == "--status" ]]; then
+  sha="${2:-}"; valid "$sha"
+  if systemctl is-active --quiet "$UNIT"; then echo "running"; exit 10; fi
+  last="$(grep -E " (deployed|refused|health check failed for|ROLLBACK FAILED)" "$LOG" | grep -E "$sha" | tail -1 || true)"
+  echo "${last:-no record for $sha}"
+  [[ "$last" == *" deployed $sha"* ]] && exit 0
+  exit 1
+fi
+
+sha="${1:-}"; valid "$sha"
+if systemctl is-active --quiet "$UNIT"; then echo "Another deploy is running" >&2; exit 3; fi
+systemctl reset-failed "$UNIT" 2>/dev/null || true
+exec systemd-run --quiet --unit "$UNIT" --uid reframe --gid reframe \
+  --setenv HOME=/opt/shotline-reframe --working-directory /opt/shotline-reframe \
+  --pipe --wait --collect /opt/shotline-reframe/app/deploy.sh "$sha"
