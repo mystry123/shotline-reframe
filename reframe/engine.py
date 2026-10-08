@@ -19,6 +19,7 @@ from .decode import decode
 from .bodies import BodyDetector
 from .faces import FaceDetector
 from .content import ContentBox, content_boxes
+from .continuity import setups, transitions, unify
 from .layout import Segment, plan_content, plan_shot, shot_alternatives
 from .probe import Rect, VideoInfo, find_picture_area, probe
 from .shots import Shot, detect_shots
@@ -187,6 +188,11 @@ def _caption_band(analysis: "Analysis") -> tuple[float, float, float, float] | N
     return band
 
 
+def _with_transitions(segments: list[dict], cut_times: list[float]) -> list[dict]:
+    transitions(segments, cut_times)
+    return segments
+
+
 def parse_ratio(ratio: str) -> float:
     a, b = ratio.split(":")
     return float(a) / float(b)
@@ -276,16 +282,30 @@ def plan(analysis: Analysis, ratio: str, keep_text: list[str] | None = None,
     area = analysis.area
     options = options or Options(quality=analysis.quality)
     min_crop_h = options.min_crop_height(area.h)
-    segments = []
+    items = shot_options(analysis, ratio, options)
+    groups = setups(analysis, items)
+    setup_of = {pos: g for g in groups for pos in g}
+    picked_segs: list[list[Segment]] = []
     picked = []
-    for item in shot_options(analysis, ratio, options):
+    for pos, item in enumerate(items):
         s, opts = item["shot"], item["options"]
-        name = (choices or {}).get(s.index, "rules")
+        # The director picks per setup (on one shot of it): apply that pick to every shot of the setup.
+        chosen = [(p, (choices or {}).get(items[p]["shot"].index)) for p in setup_of[pos]]
+        rep, name = next(((p, n) for p, n in chosen if n), (pos, "rules"))
         if name not in opts:
-            name = "rules"
-        segments.extend(opts[name])
+            # This shot lacks that option (near-duplicates are merged per shot):
+            # take its option of the same layout and closest size.
+            want = items[rep]["options"].get(name, [None])[0]
+            same = [(n, segs) for n, segs in opts.items()
+                    if want is not None and segs[0].layout == want.layout and len(segs) == 1]
+            name = min(same, key=lambda ns: abs(ns[1][0].info.get("crop_h", 1) - want.info.get("crop_h", 1)))[0] \
+                if same else "rules"
+        picked_segs.append(opts[name])
         picked.append({"shot": s.index, "start": round(s.start, 3), "end": round(s.end, 3), "choice": name,
-                       "options": list(opts)})
+                       "options": list(opts), "setup": items[setup_of[pos][0]]["shot"].index})
+    # One framing per setup: no resizing at the jump cuts of a talking head.
+    unify(groups, picked_segs, target, area.w / area.h)
+    segments = [seg for segs in picked_segs for seg in segs]
     return {
         "engine": ENGINE_VERSION,
         "source": {"width": analysis.info.width, "height": analysis.info.height, "duration": analysis.info.duration,
@@ -296,7 +316,8 @@ def plan(analysis: Analysis, ratio: str, keep_text: list[str] | None = None,
                    "Choose tighter framing to zoom in anyway."] if min_crop_h >= 1.0 else []),
         "speakers": {spk: {"person": pid, "confidence": round(analysis.people.confidence.get(spk, 0), 2)}
                      for spk, pid in analysis.people.speaker_person.items()},
-        "segments": [_to_frame(s, analysis.info, area) for s in segments],
+        "segments": _with_transitions([_to_frame(s, analysis.info, area) for s in segments],
+                                      [s.start for s in analysis.shots[1:]]),
         "shots": picked,
         "director": director or {"used": False},
         # Burned-in text found outside the picture: the editor asks whether to

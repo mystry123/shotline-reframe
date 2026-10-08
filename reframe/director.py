@@ -407,7 +407,8 @@ def _parse(text: str) -> list[dict]:
     return shots
 
 
-def direct(analysis, shot_options: list[dict], target_aspect: float, output_height: int = 1080) -> dict:
+def direct(analysis, shot_options: list[dict], target_aspect: float, output_height: int = 1080,
+           groups: list[list[int]] | None = None) -> dict:
     """Choices for the shots that have alternatives.
 
     Returns {"used", "model", "choices": {shot index: option name},
@@ -415,7 +416,14 @@ def direct(analysis, shot_options: list[dict], target_aspect: float, output_heig
     started = time.time()
     summary: dict = {"used": False, "model": model_id(), "choices": {}, "notes": []}
     rows, letters_of = [], {}
-    for item in shot_options:
+    # One question per setup (shots of one camera position; see continuity.py),
+    # asked on its longest shot: the engine applies the answer to the whole setup.
+    asked = None
+    if groups:
+        asked = {max(g, key=lambda pos: shot_options[pos]["shot"].end - shot_options[pos]["shot"].start) for g in groups}
+    for pos, item in enumerate(shot_options):
+        if asked is not None and pos not in asked:
+            continue
         shot, opts = item["shot"], item["options"]
         still_jpg = getattr(analysis, "stills", {}).get(shot.index)
         if len(opts) < 2 or still_jpg is None:

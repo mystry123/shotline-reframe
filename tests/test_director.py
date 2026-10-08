@@ -57,7 +57,10 @@ def test_a_confident_pick_changes_that_shot_only(analysis, options, monkeypatch)
     rules = plan(analysis, "2:3")
     directed = plan(analysis, "2:3", choices=summary["choices"], director=summary)
     changed = [s for s in directed["shots"] if s["choice"] != "rules"]
-    assert [s["shot"] for s in changed] == [shot["shot"].index]
+    setup = next(s["setup"] for s in directed["shots"] if s["shot"] == shot["shot"].index)
+    # The pick applies to the whole setup (same person and camera position), and only to it.
+    assert {s["shot"] for s in changed} == {s["shot"] for s in directed["shots"] if s["setup"] == setup}
+    assert shot["shot"].index in {s["shot"] for s in changed}
     assert directed["director"]["used"] and rules["director"] == {"used": False}
 
 

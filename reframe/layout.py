@@ -274,16 +274,22 @@ def _single_person(shot: Shot, p: Track, target_aspect: float, pic_aspect: float
                            "the person" + (" and their captions" if captions else "") + " don't fit the shape: shown whole over a blurred background")
 
 
-def _framed_segment(shot: Shot, p: Track, box, target_aspect: float, pic_aspect: float, reason: str) -> Segment:
-    """`box` (x0, y0, x1, y1) shown whole, centred over a blurred copy of the picture."""
-    kx0, ky0, kx1, ky1 = box
-    keep_w, keep_h = kx1 - kx0, ky1 - ky0
-    region_aspect = (keep_w * pic_aspect) / keep_h          # pixels
+def framed_canvas(region_w: float, region_h: float, target_aspect: float, pic_aspect: float):
+    """Where a region (share of the picture) sits in the output when shown
+    whole and as large as possible, centred: (left, top, width, height)."""
+    region_aspect = (region_w * pic_aspect) / region_h          # pixels
     if region_aspect < target_aspect:
         cw, ch = region_aspect / target_aspect, 1.0
     else:
         cw, ch = 1.0, target_aspect / region_aspect
-    canvas = ((1 - cw) / 2, (1 - ch) / 2, cw, ch)
+    return ((1 - cw) / 2, (1 - ch) / 2, cw, ch)
+
+
+def _framed_segment(shot: Shot, p: Track, box, target_aspect: float, pic_aspect: float, reason: str) -> Segment:
+    """`box` (x0, y0, x1, y1) shown whole, centred over a blurred copy of the picture."""
+    kx0, ky0, kx1, ky1 = box
+    keep_w, keep_h = kx1 - kx0, ky1 - ky0
+    canvas = framed_canvas(keep_w, keep_h, target_aspect, pic_aspect)
     kfs = [Keyframe(shot.start, kx0, ky0, keep_w, keep_h), Keyframe(shot.end, kx0, ky0, keep_w, keep_h)]
     return Segment(shot.start, shot.end, "framed", [Zone(canvas, kfs, f"track {p.track_id}")], reason)
 

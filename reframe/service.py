@@ -44,6 +44,7 @@ from fastapi import FastAPI, Header, HTTPException
 from pydantic import BaseModel, Field
 
 from . import director
+from .continuity import setups
 from .engine import ENGINE_VERSION, Analysis, analyze, parse_ratio, plan, shot_options
 from .options import OUTPUT_HEIGHTS, QUALITY, ZOOM, Options
 
@@ -180,7 +181,7 @@ def _load(analysis_id: str) -> Analysis | None:
 def _directed(analysis_id: str, result: Analysis, ratio: str, options: Options) -> dict:
     """The AI director's picks for this analysis and shape, cached on disk
     (only successful runs are cached; failures are retried next time)."""
-    key = hashlib.sha256(f"{analysis_id}|{ratio}|{options.zoom}|{options.output_height}|"
+    key = hashlib.sha256(f"{analysis_id}|{ratio}|{options.zoom}|{options.output_height}|setups|"
                          f"{director.model_id()}|{director.PROMPT_VERSION}".encode()).hexdigest()[:32]
     path = CACHE_DIR / "director" / f"{key}.json"
     if path.exists():
@@ -188,7 +189,8 @@ def _directed(analysis_id: str, result: Analysis, ratio: str, options: Options) 
         summary["choices"] = {int(k): v for k, v in summary["choices"].items()}
         summary["cached"] = True
         return summary
-    summary = director.direct(result, shot_options(result, ratio, options), parse_ratio(ratio), options.output_height)
+    items = shot_options(result, ratio, options)
+    summary = director.direct(result, items, parse_ratio(ratio), options.output_height, groups=setups(result, items))
     if summary.get("used"):
         path.parent.mkdir(exist_ok=True)
         path.write_text(json.dumps(summary))
