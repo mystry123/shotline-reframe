@@ -10,10 +10,6 @@ reframe.shotline.in {
 			response_header_timeout 180s
 		}
 	}
-	log {
-		output file /var/log/caddy/reframe-access.log {
-			roll_size 20MiB
-			roll_keep 5
-		}
-	}
+	# Access log to the journal: journalctl -u caddy
+	log
 }
