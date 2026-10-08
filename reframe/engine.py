@@ -17,6 +17,7 @@ from .faces import FaceDetector
 from .layout import Segment, plan_shot
 from .probe import Rect, VideoInfo, find_picture_area, probe
 from .shots import Shot, detect_shots
+from .speakers import People, Turn, active_person, describe_tracks, group_people, load_turns, map_speakers
 from .tracks import Track, track_shot
 
 ENGINE_VERSION = "2.0.0-dev"
@@ -31,10 +32,14 @@ class Analysis:
     area: Rect
     shots: list[Shot]
     tracks: dict[int, list[Track]]
+    turns: list[Turn]
+    people: People
     timings: dict[str, float]
 
 
-def analyze(path: str) -> Analysis:
+def analyze(path: str, words: list[dict] | None = None) -> Analysis:
+    """`words`: the transcript's words with speaker labels (ElevenLabs shape),
+    when there is one; without it, layouts are decided from the picture only."""
     timings: dict[str, float] = {}
     t0 = time.perf_counter()
     info = probe(path)
@@ -54,7 +59,14 @@ def analyze(path: str) -> Analysis:
     t0 = time.perf_counter()
     tracks = {s.index: track_shot(s, faces, frames.fps) for s in shots}
     timings["tracks"] = time.perf_counter() - t0
-    return Analysis(info, area, shots, tracks, timings)
+
+    t0 = time.perf_counter()
+    describe_tracks(tracks, frames)
+    person_of = group_people(tracks)
+    turns = load_turns(words or [])
+    people = map_speakers(turns, shots, tracks, person_of)
+    timings["speakers"] = time.perf_counter() - t0
+    return Analysis(info, area, shots, tracks, turns, people, timings)
 
 
 def parse_ratio(ratio: str) -> float:
@@ -82,15 +94,24 @@ def plan(analysis: Analysis, ratio: str) -> dict:
     pic_aspect = area.w / area.h
     # Resolution limit: don't zoom so far that the crop is magnified past MAX_UPSCALE.
     min_crop_h = min(1.0, max(0.35, OUTPUT_HEIGHT / (area.h * MAX_UPSCALE)))
-    segments = [
-        plan_shot(s, analysis.tracks[s.index], target, pic_aspect, ANALYSIS_FPS, min_crop_h)
-        for s in analysis.shots
-    ]
+    segments = []
+    for s in analysis.shots:
+        shot_tracks = analysis.tracks[s.index]
+
+        def speaking(t: float, s=s, shot_tracks=shot_tracks):
+            pid = active_person(analysis.turns, analysis.people, t)
+            if pid is None:
+                return None
+            return next((tr for tr in shot_tracks if analysis.people.person_of.get((s.index, tr.track_id)) == pid), None)
+
+        segments.extend(plan_shot(s, shot_tracks, target, pic_aspect, ANALYSIS_FPS, min_crop_h, speaking))
     return {
         "engine": ENGINE_VERSION,
         "source": {"width": analysis.info.width, "height": analysis.info.height, "duration": analysis.info.duration,
                    "fps": analysis.info.fps, "picture": asdict(area)},
         "target": ratio,
         "notes": (["Low-resolution source: no zooming in, to keep it sharp."] if min_crop_h >= 1.0 else []),
+        "speakers": {spk: {"person": pid, "confidence": round(analysis.people.confidence.get(spk, 0), 2)}
+                     for spk, pid in analysis.people.speaker_person.items()},
         "segments": [_to_frame(s, analysis.info, area) for s in segments],
     }

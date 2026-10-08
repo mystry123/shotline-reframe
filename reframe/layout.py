@@ -155,8 +155,58 @@ def _follow(shot: Shot, tracks: list[Track], crop_w: float, crop_h: float, fps: 
     return _rdp(kfs, 0.003)
 
 
+SWITCH_DELAY = 0.25          # cut to a new speaker this long after they start
+MIN_LAYOUT_S = 2.5           # no framing shorter than this
+
+
+def _speaker_runs(shot: Shot, a: Track, b: Track, speaking: "callable") -> list[tuple[float, float, Track]] | None:
+    """Follow-the-speaker runs inside a shot, or None when the speaker can't
+    be told (then the caller splits instead of guessing)."""
+    step = 0.2
+    times = np.arange(shot.start, shot.end, step)
+    who: list[Track | None] = []
+    for t in times:
+        tr = speaking(t - SWITCH_DELAY)
+        who.append(tr if tr in (a, b) else None)
+    if all(w is None for w in who):
+        return None
+    # Hold the last speaker through pauses; before anyone speaks, use the first speaker.
+    first = next(w for w in who if w is not None)
+    current = first
+    filled = []
+    for w in who:
+        current = w or current
+        filled.append(current)
+    runs: list[list] = []
+    for t, w in zip(times, filled):
+        if runs and runs[-1][2] is w:
+            runs[-1][1] = t + step
+        else:
+            runs.append([t, t + step, w])
+    # Too-short framings merge into the previous one (no flicker).
+    merged: list[list] = []
+    for r in runs:
+        if merged and (r[1] - r[0] < MIN_LAYOUT_S or merged[-1][2] is r[2]):
+            merged[-1][1] = r[1]
+        else:
+            merged.append(r)
+    if len(merged) > 1 and merged[0][1] - merged[0][0] < MIN_LAYOUT_S:
+        merged[1][0] = merged[0][0]
+        merged.pop(0)
+    merged[0][0], merged[-1][1] = shot.start, shot.end
+    return [(r[0], r[1], r[2]) for r in merged]
+
+
 def plan_shot(shot: Shot, tracks: list[Track], target_aspect: float, pic_aspect: float,
-              fps: float, min_crop_h: float) -> Segment:
+              fps: float, min_crop_h: float, speaking: "callable | None" = None) -> list[Segment]:
+    """Segments for one shot. `speaking(t)` returns the track speaking at time t
+    (from the transcript), or None."""
+    seg = _plan_shot(shot, tracks, target_aspect, pic_aspect, fps, min_crop_h, speaking)
+    return seg if isinstance(seg, list) else [seg]
+
+
+def _plan_shot(shot: Shot, tracks: list[Track], target_aspect: float, pic_aspect: float,
+               fps: float, min_crop_h: float, speaking: "callable | None") -> "Segment | list[Segment]":
     people = [t for t in tracks if t.is_person]
     if abs(target_aspect / pic_aspect - 1) < 0.03:
         return Segment(shot.start, shot.end, "full",
@@ -186,6 +236,16 @@ def plan_shot(shot: Shot, tracks: list[Track], target_aspect: float, pic_aspect:
         w, h = _crop_size(target_aspect, pic_aspect, main.median("h"), FACE_FRACTION_SINGLE, min_crop_h)
         return Segment(shot.start, shot.end, "single", [Zone((0, 0, 1, 1), _follow(shot, [main], w, h, fps), f"track {main.track_id}")],
                        "over-the-shoulder: framing the person facing the camera")
+    # Follow whoever is talking, when we know who that is.
+    runs = _speaker_runs(shot, a, b, speaking) if speaking else None
+    if runs:
+        segments = []
+        for start, end, who in runs:
+            part = Shot(shot.index, start, end)
+            w, h = _crop_size(target_aspect, pic_aspect, who.median("h"), FACE_FRACTION_SINGLE, min_crop_h)
+            segments.append(Segment(start, end, "single", [Zone((0, 0, 1, 1), _follow(part, [who], w, h, fps), f"track {who.track_id}")],
+                                    "following the speaker"))
+        return segments
     zone_aspect = target_aspect * 2  # each zone is the full width and half the height
     zones = []
     for i, p in enumerate((a, b)):

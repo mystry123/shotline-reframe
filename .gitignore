@@ -3,3 +3,5 @@ __pycache__/
 *.pyc
 out/
 .DS_Store
+testdata/*.mp4
+testdata/*.m4a

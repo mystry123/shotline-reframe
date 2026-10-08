@@ -7,3 +7,4 @@ scenedetect==0.7.1
 # Roboflow's `trackers` package.
 supervision==0.30.8
 scipy==1.18.1
+pytest==8.4.2  # dev
