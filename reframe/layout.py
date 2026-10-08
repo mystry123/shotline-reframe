@@ -67,6 +67,7 @@ class Segment:
     layout: str
     zones: list[Zone]
     reason: str
+    info: dict = field(default_factory=dict)   # measurements (crop height, share of the person kept)
 
 
 def _facing(t: Track) -> float:
@@ -250,13 +251,13 @@ def _single_person(shot: Shot, p: Track, target_aspect: float, pic_aspect: float
             kx0, ky0, kx1, ky1 = cx0, cy0, cx1, cy1
             keep_w, keep_h = kx1 - kx0, ky1 - ky0
 
-    if keep_w <= max_w and keep_h <= max_h:
-        # Fits in a crop of the target shape: follow the person, never cutting
-        # the must-keep area.
-        w, h = _crop_size(target_aspect, pic_aspect, p.median("h"), FACE_FRACTION_SINGLE, min_crop_h)
-        if w < keep_w or h < keep_h:
-            grow = max(keep_w / w, keep_h / h)
-            w, h = min(max_w, w * grow), min(max_h, h * grow)
+    w, h = _crop_size(target_aspect, pic_aspect, p.median("h"), FACE_FRACTION_SINGLE, min_crop_h)
+    if w < keep_w or h < keep_h:
+        grow = max(keep_w / w, keep_h / h)
+        w, h = min(max_w, w * grow), min(max_h, h * grow)
+    if keep_w <= max_w and keep_h <= max_h and h >= min_crop_h - ZOOM_TOLERANCE:
+        # Fits in a crop of the target shape within the zoom limit: follow the
+        # person, never cutting the must-keep area.
         kfs = _follow(shot, [p], w, h, fps)
         for k in kfs:
             k.x = float(np.clip(k.x, max(0.0, kx1 - w), min(kx0, 1 - w)))
@@ -305,6 +306,14 @@ def _same_framing(a: list[Segment], b: list[Segment]) -> bool:
 
 
 KEEP_TOLERANCE = 0.02   # share of the picture a crop may shave off a must-keep box
+ZOOM_TOLERANCE = 0.01   # crop height may undershoot the zoom limit by this much
+# Share of the height of the person's upper body (head down to the waist,
+# where hands at work usually are) a framing must keep, unless the user chose
+# tight framing. Height only: trimming the sides of a body (arms, chair) is a
+# normal crop for a tall target; losing the hands and torso below is not.
+SUBJECT_KEEP = 0.75
+NEAR_FULL_CANVAS = 0.8   # a framed view covering more of the output than this (without filling its height) isn't offered
+UPPER_BODY_FACES = 4.5  # the "upper body" ends this many face heights below the top of the face (about the waist)
 
 
 def _inner(person: Track, captions):
@@ -328,47 +337,125 @@ def _keeps(seg: Segment, box) -> bool:
     return True
 
 
-def shot_alternatives(shot: Shot, tracks: list[Track], rules: list[Segment], target_aspect: float,
-                      pic_aspect: float, fps: float, min_crop_h: float, captions=None) -> dict[str, list[Segment]]:
-    """Named framings of a shot, starting with the rules' choice ("rules").
-    Near-duplicates are left out, so a shot may have only one."""
-    out: dict[str, list[Segment]] = {"rules": rules}
+def upper_body(person: Track) -> tuple[float, float, float, float]:
+    """The part of the person a framing must not cut away: measured body
+    (arms and hands included), down to UPPER_BODY_FACES face heights below
+    the face (legs and floor don't count)."""
+    x0, y0, x1, y1 = person.body_extent()
+    limit = person.median("y") + UPPER_BODY_FACES * person.median("h")
+    return x0, y0, x1, min(y1, max(limit, person.median("y") + person.median("h")))
 
-    def add(name: str, segs: list[Segment], keep=None) -> None:
-        # A crop that would cut what must stay (face and shoulders, captions)
-        # isn't offered at all: the director can't pick a mistake.
-        if keep is not None and not all(_keeps(seg, keep) for seg in segs):
-            return
+
+def share_kept(seg: Segment, box, axes: str = "y") -> float:
+    """Smallest share (over keyframes) of `box` the segment's crops keep,
+    along `axes` ("y" height, "x" width, "xy" both)."""
+    x0, y0, x1, y1 = box
+    bw, bh = max(x1 - x0, 1e-6), max(y1 - y0, 1e-6)
+    worst = 1.0
+    for z in seg.zones:
+        for k in z.keyframes:
+            if "x" in axes:
+                worst = min(worst, max(0.0, min(x1, k.x + k.w) - max(x0, k.x)) / bw)
+            if "y" in axes:
+                worst = min(worst, max(0.0, min(y1, k.y + k.h) - max(y0, k.y)) / bh)
+    return worst
+
+
+def crop_height(seg: Segment) -> float:
+    """Smallest crop height (share of the picture) per output height: what
+    the zoom limit applies to (a framed region on half the canvas counts double)."""
+    return min((k.h / max(z.canvas[3], 1e-6)) for z in seg.zones for k in z.keyframes)
+
+
+def shot_alternatives(shot: Shot, tracks: list[Track], rules: list[Segment], target_aspect: float,
+                      pic_aspect: float, fps: float, min_crop_h: float, captions=None,
+                      strict: bool = True) -> dict[str, list[Segment]]:
+    """Named framings of a shot, starting with the rules' choice ("rules").
+
+    Every alternative is checked before it is offered: it keeps the face and
+    any captions whole, stays within the zoom limit (`min_crop_h`, from the
+    output resolution and the user's framing choice) and, unless `strict` is
+    off (the user chose tight framing), keeps SUBJECT_KEEP of the person's
+    upper body. Near-duplicates are left out, so a shot may have only one."""
+    out: dict[str, list[Segment]] = {"rules": rules}
+    people = [t for t in tracks if t.is_person]
+    person = people[0] if len(people) == 1 else None
+
+    def measure(segs: list[Segment]) -> None:
+        for seg in segs:
+            seg.info["crop_h"] = round(crop_height(seg), 3)
+            if person is not None:
+                seg.info["person_kept"] = round(share_kept(seg, upper_body(person)), 3)
+
+    def add(name: str, segs: list[Segment]) -> None:
+        measure(segs)
+        for seg in segs:
+            if seg.layout == "framed":
+                _, _, cw, ch = seg.zones[0].canvas
+                # Blurred bands are worth it beside a full-height picture, or
+                # around a clearly smaller one; thin bands above and below a
+                # near-full crop are just a worse version of that crop.
+                if ch < 0.98 and cw * ch > NEAR_FULL_CANVAS:
+                    return
+        if person is not None:
+            if not all(_keeps(seg, _inner(person, captions)) for seg in segs):
+                return                                   # cuts the face or captions
+            if any(seg.info["crop_h"] < min_crop_h - ZOOM_TOLERANCE for seg in segs):
+                return                                   # zooms in further than allowed
+            if strict and any(seg.info["person_kept"] < SUBJECT_KEEP for seg in segs):
+                return                                   # cuts away too much of the person
         if not any(_same_framing(segs, v) for v in out.values()):
             out[name] = segs
 
+    measure(rules)
     if abs(target_aspect / pic_aspect - 1) < 0.03:
         return out
-    people = [t for t in tracks if t.is_person]
-    if len(people) == 1:
-        p = people[0]
+    if person is not None:
+        p = person
         tag = f"track {p.track_id}"
         max_w, max_h = _crop_for_target(target_aspect, pic_aspect)
-        # Close: a medium close-up following the face (may cut captions).
+        # Close: a medium close-up following the face.
         w, h = _crop_size(target_aspect, pic_aspect, p.median("h"), FACE_FRACTION_SINGLE, min_crop_h)
         add("close", [Segment(shot.start, shot.end, "single", [Zone((0, 0, 1, 1), _follow(shot, [p], w, h, fps), tag)],
-                              "close-up on the person")], keep=_inner(p, captions))
+                              "close-up on the person")])
         # Medium: the biggest crop of the target shape, on the person, keeping captions when they fit.
-        # Never at the cost of the face: captions are kept only if they fit together with it.
         kfs = _follow(shot, [p], max_w, max_h, fps)
         kx0, ky0, kx1, ky1 = _must_keep(p, captions, CORE)
         if kx1 - kx0 <= max_w and ky1 - ky0 <= max_h:
             for k in kfs:
                 k.x = float(np.clip(k.x, max(0.0, kx1 - max_w), min(kx0, 1 - max_w)))
                 k.y = float(np.clip(k.y, max(0.0, ky1 - max_h), min(ky0, 1 - max_h)))
-        add("medium", [Segment(shot.start, shot.end, "single", [Zone((0, 0, 1, 1), kfs, tag)], "as close as the shape allows")],
-            keep=_inner(p, captions))
-        # Whole: head, shoulders and captions shown whole over a blurred
-        # background, as big as they can be (tighter than showing the whole picture).
-        for name, spread in (("whole", CORE), ("whole-wide", PREFERRED)):
-            add(name, [_framed_segment(shot, p, _must_keep(p, captions, spread), target_aspect, pic_aspect,
+        add("medium", [Segment(shot.start, shot.end, "single", [Zone((0, 0, 1, 1), kfs, tag)], "as close as the shape allows")])
+        # Framed over a blurred background, from tightest to widest: head and
+        # shoulders, head to chest, the whole upper body (hands and what they hold).
+        body = upper_body(p)
+        cap = captions or body
+        body_box = (max(0.0, min(body[0], cap[0]) - KEEP_MARGIN), max(0.0, min(body[1], cap[1]) - KEEP_MARGIN),
+                    min(1.0, max(body[2], cap[2]) + KEEP_MARGIN), min(1.0, max(body[3], cap[3]) + KEEP_MARGIN))
+        # Upper: the closest framed view that still passes the person check:
+        # the upper body trimmed from the bottom to SUBJECT_KEEP of its height
+        # (never above the face or the captions).
+        inner = _inner(p, captions)
+        upper_bottom = max(body[1] + SUBJECT_KEEP * (body[3] - body[1]) + KEEP_TOLERANCE, inner[3])
+        upper_box = (body_box[0], body_box[1], body_box[2], min(1.0, upper_bottom + KEEP_MARGIN))
+        for name, box in (("whole", _must_keep(p, captions, CORE)), ("whole-wide", _must_keep(p, captions, PREFERRED)),
+                          ("upper", upper_box), ("body", body_box)):
+            add(name, [_framed_segment(shot, p, box, target_aspect, pic_aspect,
                                        "the person shown whole over a blurred background")])
     add("wide", [_fit_segment(shot, "the whole picture")])
+
+    # The rules' framing is also the fallback when the director can't be
+    # reached, so it must pass the same checks: if it cuts too much of the
+    # person or zooms too far, the closest framing that passes takes its place.
+    if person is not None and len(out) > 1:
+        def passes(segs: list[Segment]) -> bool:
+            return all(seg.info["crop_h"] >= min_crop_h - ZOOM_TOLERANCE
+                       and (not strict or seg.info["person_kept"] >= SUBJECT_KEEP) for seg in segs)
+        if not passes(out["rules"]):
+            for name in ("upper", "whole", "whole-wide", "body", "medium", "close", "wide"):
+                if name in out and passes(out[name]):
+                    out["rules"] = out.pop(name)
+                    break
     return out
 
 

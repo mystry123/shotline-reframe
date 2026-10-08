@@ -12,7 +12,8 @@ Two kinds of setting, from two places:
     zoom           how far the engine may zoom in on small subjects:
                    "sharp"    never magnify the source much (default for low-res uploads)
                    "balanced" moderate zoom
-                   "tight"    always allow up to 2× zoom, even if softer
+                   "tight"    close-ups allowed (at least 2×, up to 4× on sharp sources; part of the person
+                              may be left out), even if softer
 """
 
 from __future__ import annotations
@@ -30,7 +31,9 @@ QUALITY = {
 ZOOM = {
     "sharp":    {"max_upscale": 1.5, "min_crop": 0.35},
     "balanced": {"max_upscale": 2.5, "min_crop": 0.35},
-    "tight":    {"max_upscale": None, "min_crop": 0.5},   # always allow up to 2x
+    # Tight must always allow at least as much zoom as balanced.
+    # (never stricter than 2x, however small the source: "even if softer").
+    "tight":    {"max_upscale": 4.0, "min_crop": 0.25, "always_allow": 0.5},
 }
 
 OUTPUT_HEIGHTS = (720, 1080, 1440, 2160)
@@ -53,7 +56,6 @@ class Options:
     def min_crop_height(self, picture_px_height: int) -> float:
         """Smallest crop height (share of the picture) the camera may use."""
         z = ZOOM[self.zoom]
-        if z["max_upscale"] is None:
-            return z["min_crop"]
         by_resolution = self.output_height / (picture_px_height * z["max_upscale"])
-        return float(min(1.0, max(z["min_crop"], by_resolution)))
+        limit = min(1.0, max(z["min_crop"], by_resolution))
+        return float(min(limit, z.get("always_allow", 1.0)))

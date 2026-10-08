@@ -28,16 +28,22 @@ Environment (the older REFRAME_DIRECTOR* names are still read as fallbacks):
                              sheets in seconds; medium/high can exceed the deadline)
     DIRECTOR_TIMEOUT_S       per-attempt timeout (default 60)
     DIRECTOR_RETRIES         extra attempts after a 429/5xx (default 3)
+    DIRECTOR_BUDGET_S        total time for one plan's director work (default 75; the
+                             backend allows 120 s). Each contact sheet is its own
+                             request, sent in parallel: a sheet that fails or runs out
+                             of time keeps the rules for its shots only.
 """
 
 from __future__ import annotations
 
 import base64
 import json
+from concurrent.futures import ThreadPoolExecutor
 import logging
 import os
 import random
 import re
+import threading
 import time
 
 import cv2
@@ -47,22 +53,26 @@ from .layout import Segment
 
 log = logging.getLogger("reframe.director")
 
-PROMPT_VERSION = "1"
+PROMPT_VERSION = "3"
 MIN_CONFIDENCE = 0.5
 SHOTS_PER_SHEET = 5
 TILE_H = 240
 MAX_SIDE = 1568            # larger images are scaled down by the API anyway
 LETTERS = "ABCDEFG"
 
-SYSTEM = """You are the editor reframing a video for another aspect ratio (for example a vertical phone video turned into a horizontal one). For each shot you see the original frame and up to five candidate framings, labelled A, B, C… A is the automatic choice.
+SYSTEM = """You are the editor reframing a video for another aspect ratio (for example a vertical phone video turned into a horizontal one). For each shot you see the original frame, with a coloured outline of what each candidate keeps, and up to six candidate framings labelled A, B, C… A is the automatic choice. Every candidate has already passed hard checks (face and captions whole, zoom within the limit, most of the person kept), so you are choosing the best of acceptable options.
 
-Pick the candidate that will look best to a viewer, judging from the still:
-- Never cut through a person's head or face, and don't leave the main person awkwardly cut at the edge.
-- Text that is part of the picture (subtitles burned into the video, slide text, screen content, product names) must stay whole and readable. Cutting words off is a serious fault.
-- Among candidates that keep everything important, prefer the one where the subject is biggest. A small person in a mostly blurred frame is worse than a slightly tighter frame that still keeps their head, face and any captions.
-- Screens, slides and graphics should be shown whole when they carry information.
+Each label shows two measurements:
+- the zoom (for example "1.4x"): how much the source is enlarged. Above about 2x the picture gets visibly soft.
+- "keeps N% of person": how much of the person's upper body (head, torso, arms and hands) stays in frame.
+
+Pick the candidate a professional editor would use: the person as large as possible while keeping what matters.
+- What matters: the face, text that is part of the picture (burned-in subtitles, slide text, screens, product names) whole and readable, and hands that are doing something (writing, holding or showing an object, pointing at something). Cutting those away is a fault.
+- Hands resting, or casually gesturing at the bottom of the frame, may be trimmed when that makes the person clearly larger.
+- Blurred sides are fine: a vertical video in a wide frame over a blurred background is normal. But a small person between wide blurred sides is a last resort when a larger candidate keeps what matters.
+- Prefer sharper candidates: above about 2x zoom the picture gets visibly soft.
 - Keep it consistent: shots from the same setup should get the same kind of framing unless their content differs.
-Keep A unless another candidate is clearly better.
+All candidates are acceptable; choose the best one, not the safest one.
 
 Reply with JSON only, no other text:
 {"shots": [{"shot": <shot number>, "choice": "<letter>", "confidence": <0..1>, "reason": "<one short sentence>"}]}"""
@@ -130,22 +140,60 @@ def draw_option(still: np.ndarray, segs: list[Segment], t: float, target_aspect:
 
 def _label(tile: np.ndarray, text: str) -> np.ndarray:
     bar = np.full((28, tile.shape[1], 3), 255, np.uint8)
-    cv2.putText(bar, text, (6, 20), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 0), 2, cv2.LINE_AA)
+    scale = 0.6
+    while scale > 0.3 and cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, scale, 1)[0][0] > tile.shape[1] - 10:
+        scale -= 0.05                       # narrow tiles (tall target shapes): smaller text
+    cv2.putText(bar, text, (5, 19), cv2.FONT_HERSHEY_SIMPLEX, scale, (0, 0, 0), 1 if scale < 0.5 else 2, cv2.LINE_AA)
     return np.vstack([bar, tile])
 
 
-def contact_sheet(rows: list[dict], target_aspect: float) -> bytes:
-    """rows: {"number", "still", "options": [(letter, segs)], "t"} → JPEG bytes."""
+OUTLINE_COLOURS = [(80, 200, 255), (90, 220, 90), (255, 160, 60), (220, 90, 220), (60, 230, 230), (255, 255, 255)]
+
+
+def option_label(letter: str, segs: list[Segment], t: float, upscale_per_crop_h: float) -> str:
+    """"B 1.4x keeps 92%": zoom in output pixels, share of the person kept."""
+    seg = _segment_at(segs, t)
+    label = letter
+    if seg.info.get("crop_h"):
+        label += f" {upscale_per_crop_h / seg.info['crop_h']:.1f}x"
+    if seg.info.get("person_kept") is not None:
+        label += f" keeps {seg.info['person_kept']:.0%}"
+    return label
+
+
+def _outline(original: np.ndarray, options: list, t: float) -> np.ndarray:
+    """Draw what each cropping candidate keeps on the original frame."""
+    img = original.copy()
+    H, W = img.shape[:2]
+    for i, (letter, segs) in enumerate(options):
+        seg = _segment_at(segs, t)
+        if seg.layout in ("fit", "full"):
+            continue
+        colour = OUTLINE_COLOURS[i % len(OUTLINE_COLOURS)]
+        for z in seg.zones:
+            x, y, w, h = _interp(z.keyframes, t)
+            p0 = (int(x * W) + i, int(y * H) + i)
+            p1 = (int((x + w) * W) - 1 - i, int((y + h) * H) - 1 - i)
+            cv2.rectangle(img, p0, p1, colour, 2)
+            cv2.putText(img, letter, (p0[0] + 4, p0[1] + 18), cv2.FONT_HERSHEY_SIMPLEX, 0.6, colour, 2, cv2.LINE_AA)
+    return img
+
+
+def contact_sheet(rows: list[dict], target_aspect: float, upscale_per_crop_h: float = 1.0) -> bytes:
+    """rows: {"number", "still", "options": [(letter, segs)], "t"} → JPEG bytes.
+    `upscale_per_crop_h`: output height / picture height in pixels (zoom of a
+    crop that shows the whole picture height)."""
     drawn_rows = []
     for row in rows:
         still = row["still"]
         sh, sw = still.shape[:2]
         original = cv2.resize(still, (max(1, int(TILE_H * sw / sh)), TILE_H), interpolation=cv2.INTER_AREA)
-        tiles = [_label(original, f"Shot {row['number']}: original")]
+        original = _outline(original, row["options"], row["t"])
+        tiles = [_label(original, f"Shot {row['number']}")]
         for letter, segs in row["options"]:
             tile = draw_option(still, segs, row["t"], target_aspect, TILE_H)
             cv2.rectangle(tile, (0, 0), (tile.shape[1] - 1, tile.shape[0] - 1), (255, 255, 255), 1)
-            tiles.append(_label(tile, letter))
+            tiles.append(_label(tile, option_label(letter, segs, row["t"], upscale_per_crop_h)))
         gap = np.full((TILE_H + 28, 12, 3), 40, np.uint8)
         parts = []
         for tile in tiles:
@@ -207,23 +255,24 @@ class Retryable(Exception):
     """A rate limit or server error worth trying again."""
 
 
-def _with_retries(call):
-    """Run `call`, retrying Retryable errors with exponential backoff and jitter."""
+def _with_retries(call, deadline: float | None = None):
+    """Run `call`, retrying Retryable errors with exponential backoff and
+    jitter, but never past `deadline` (time.time() seconds)."""
     retries = int(_env("RETRIES", "3"))
     for attempt in range(retries + 1):
         try:
             return call()
         except Retryable as error:
-            if attempt == retries:
-                raise
             delay = min(20.0, 1.5 * 2 ** attempt) * (0.75 + 0.5 * random.random())
+            if attempt == retries or (deadline is not None and time.time() + delay + 5 > deadline):
+                raise
             log.warning("director: %s; retrying in %.1fs (attempt %d of %d)", error, delay, attempt + 2, retries + 1)
             time.sleep(delay)
 
 
-def _ask(sheets: list[bytes], shot_list: str) -> str:
+def _ask(sheets: list[bytes], shot_list: str, deadline: float | None = None) -> str:
     if _provider() == "gemini":
-        return _with_retries(lambda: _ask_gemini(sheets, shot_list))
+        return _with_retries(lambda: _ask_gemini(sheets, shot_list, deadline), deadline)
     if _provider() == "converse":
         return _ask_converse(sheets, shot_list)
     return _ask_claude(sheets, shot_list)
@@ -237,6 +286,7 @@ REPLY_SCHEMA = {"type": "object", "required": ["shots"], "properties": {"shots":
 
 
 _gemini = None
+_gemini_lock = threading.Lock()
 
 
 def _gemini_client():
@@ -246,9 +296,10 @@ def _gemini_client():
     Application Default Credentials: gcloud ADC on a laptop, the attached
     service account on GCP."""
     global _gemini
-    if _gemini is None:
-        _gemini = _new_gemini_client()
-    return _gemini
+    with _gemini_lock:          # sheets are sent from several threads: create exactly one client
+        if _gemini is None:
+            _gemini = _new_gemini_client()
+        return _gemini
 
 
 def _new_gemini_client():
@@ -264,8 +315,14 @@ def _new_gemini_client():
                                                       retry_options=types.HttpRetryOptions(attempts=1)))
 
 
-def _ask_gemini(sheets: list[bytes], shot_list: str) -> str:
+def _ask_gemini(sheets: list[bytes], shot_list: str, deadline: float | None = None) -> str:
     from google.genai import errors, types
+
+    timeout_s = float(_env("TIMEOUT_S", "60"))
+    if deadline is not None:
+        timeout_s = min(timeout_s, deadline - time.time())
+        if timeout_s < 5:
+            raise TimeoutError("no time left in the director's budget")
 
     contents: list = []
     for i, jpg in enumerate(sheets):
@@ -278,7 +335,10 @@ def _ask_gemini(sheets: list[bytes], shot_list: str) -> str:
             contents=contents,
             config=types.GenerateContentConfig(system_instruction=SYSTEM, response_mime_type="application/json",
                                                response_json_schema=REPLY_SCHEMA,
-                                               thinking_config=types.ThinkingConfig(thinking_level=_env("THINKING", "low"))),
+                                               thinking_config=types.ThinkingConfig(thinking_level=_env("THINKING", "low")),
+                                               http_options=types.HttpOptions(
+                                                   timeout=int(timeout_s * 1000),
+                                                   retry_options=types.HttpRetryOptions(attempts=1))),
         )
     except errors.APIError as error:
         if error.code == 429 or (error.code or 0) >= 500:
@@ -347,7 +407,7 @@ def _parse(text: str) -> list[dict]:
     return shots
 
 
-def direct(analysis, shot_options: list[dict], target_aspect: float) -> dict:
+def direct(analysis, shot_options: list[dict], target_aspect: float, output_height: int = 1080) -> dict:
     """Choices for the shots that have alternatives.
 
     Returns {"used", "model", "choices": {shot index: option name},
@@ -368,28 +428,51 @@ def direct(analysis, shot_options: list[dict], target_aspect: float) -> dict:
     if not rows:
         summary["seconds"] = 0.0
         return summary
-    try:
-        sheets = [contact_sheet(rows[i:i + SHOTS_PER_SHEET], target_aspect) for i in range(0, len(rows), SHOTS_PER_SHEET)]
-        shot_list = "\n".join(f"Shot {r['number']}: {', '.join(l for l, _ in r['options'])}" for r in rows)
-        replies = _parse(_ask(sheets, shot_list))
-        by_number = {r["number"]: r for r in rows}
-        for reply in replies:
-            row = by_number.get(int(reply.get("shot", -1)))
-            if row is None:
-                continue
-            letter = str(reply.get("choice", "A")).strip().upper()[:1]
-            name = letters_of[row["index"]].get(letter)
-            confidence = float(reply.get("confidence", 0))
-            note = {"shot": row["index"], "choice": name or "rules", "confidence": round(confidence, 2),
-                    "reason": str(reply.get("reason", ""))[:200]}
-            if name and name != "rules" and confidence >= MIN_CONFIDENCE:
-                summary["choices"][row["index"]] = name
-            elif name != "rules":
-                note["choice"] = "rules"
-            summary["notes"].append(note)
-        summary["used"] = True
-    except Exception as error:  # noqa: BLE001 - the rules stand in
-        summary["error"] = f"{type(error).__name__}: {str(error)[:200]}"
-        log.warning("director: %s failed, keeping the rules' framing: %s", model_id(), summary["error"])
+    upscale = output_height / max(1, analysis.area.h)
+    deadline = started + float(_env("BUDGET_S", "75"))
+    groups = [rows[i:i + SHOTS_PER_SHEET] for i in range(0, len(rows), SHOTS_PER_SHEET)]
+
+    def ask(group: list[dict]) -> list[dict]:
+        sheet = contact_sheet(group, target_aspect, upscale)
+        shot_list = "\n".join(f"Shot {r['number']}: {', '.join(l for l, _ in r['options'])}" for r in group)
+        return _parse(_ask([sheet], shot_list, deadline))
+
+    answered, errors = [], []
+    with ThreadPoolExecutor(max_workers=min(3, len(groups))) as pool:
+        futures = [pool.submit(ask, g) for g in groups]
+        for group, future in zip(groups, futures):
+            try:
+                answered.append((group, future.result()))
+            except Exception as error:  # noqa: BLE001 - these shots keep the rules
+                numbers = f"{group[0]['number']}-{group[-1]['number']}"
+                errors.append(f"shots {numbers}: {type(error).__name__}: {str(error)[:120]}")
+
+    for group, replies in answered:
+        by_number = {r["number"]: r for r in group}
+        try:
+            for reply in replies:
+                row = by_number.get(int(reply.get("shot", -1)))
+                if row is None:
+                    continue
+                letter = str(reply.get("choice", "A")).strip().upper()[:1]
+                name = letters_of[row["index"]].get(letter)
+                confidence = float(reply.get("confidence", 0))
+                note = {"shot": row["index"], "choice": name or "rules", "confidence": round(confidence, 2),
+                        "reason": str(reply.get("reason", ""))[:200]}
+                if name and name != "rules" and confidence >= MIN_CONFIDENCE:
+                    summary["choices"][row["index"]] = name
+                elif name != "rules":
+                    note["choice"] = "rules"
+                summary["notes"].append(note)
+        except Exception as error:  # noqa: BLE001 - a malformed reply: these shots keep the rules
+            for row in group:
+                summary["choices"].pop(row["index"], None)
+            summary["notes"] = [n for n in summary["notes"] if n["shot"] not in {r["index"] for r in group}]
+            errors.append(f"shots {group[0]['number']}-{group[-1]['number']}: {type(error).__name__}: {str(error)[:120]}")
+
+    summary["used"] = len(errors) < len(groups)
+    if errors:
+        summary["error"] = "; ".join(errors)[:400]
+        log.warning("director: %s: %s, keeping the rules' framing for those shots", model_id(), summary["error"])
     summary["seconds"] = round(time.time() - started, 2)
     return summary

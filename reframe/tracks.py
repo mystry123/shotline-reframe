@@ -45,6 +45,9 @@ class Track:
     dets: list[FaceDet] = field(default_factory=list)
     liveness: float = 0.0      # image change inside the face, 1 s apart
     body: float = 0.0          # share of checked frames where a body holds this face
+    # Body boxes (x0, y0, x1, y1, picture-normalized) that claimed this face as
+    # their head: the person's whole extent (torso, arms, hands), for framing.
+    body_boxes: list = field(default_factory=list)
     presence: float = 0.0
     is_person: bool = False
     reason: str = ""
@@ -55,6 +58,23 @@ class Track:
 
     def median(self, attr: str) -> float:
         return float(np.median([getattr(d, attr) for d in self.dets]))
+
+    def body_extent(self) -> tuple[float, float, float, float]:
+        """Where the person is over the shot (x0, y0, x1, y1): the measured
+        body boxes (10th/90th percentiles, so a stray box doesn't stretch it)
+        joined with the face; estimated from the face when no body was seen."""
+        fx0, fy0 = self.median("x"), self.median("y")
+        fw, fh = self.median("w"), self.median("h")
+        face = (fx0, fy0, fx0 + fw, fy0 + fh)
+        boxes = np.array(getattr(self, "body_boxes", []) or [], dtype=float)
+        if len(boxes):
+            body = (np.percentile(boxes[:, 0], 10), np.percentile(boxes[:, 1], 10),
+                    np.percentile(boxes[:, 2], 90), np.percentile(boxes[:, 3], 90))
+        else:  # head, shoulders and upper body, as seen in most talking shots
+            cx = fx0 + fw / 2
+            body = (cx - 1.6 * fw, fy0 - 0.3 * fh, cx + 1.6 * fw, fy0 + 4.5 * fh)
+        return (float(max(0.0, min(face[0], body[0]))), float(max(0.0, min(face[1], body[1]))),
+                float(min(1.0, max(face[2], body[2]))), float(min(1.0, max(face[3], body[3]))))
 
 
 def _face_patch(frames: Frames, d: FaceDet, size: int = 24) -> np.ndarray | None:
@@ -111,7 +131,9 @@ def _body_shares(tracks: list["Track"], bodies: list[list[BodyDet]]) -> dict[int
         for b in bodies[frame]:
             scored = [(sc, t) for t, d in items if (sc := _head_score(d, b)) is not None]
             if scored:
-                held[id(max(scored, key=lambda x: x[0])[1])] += 1
+                owner = max(scored, key=lambda x: x[0])[1]
+                held[id(owner)] += 1
+                owner.body_boxes.append((b.x, b.y, b.x + b.w, b.y + b.h))
     return {id(t): (held[id(t)] / checked[id(t)] if checked[id(t)] else 0.0) for t in tracks}
 
 

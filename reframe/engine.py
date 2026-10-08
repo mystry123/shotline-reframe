@@ -28,7 +28,7 @@ from .speakers import People, Turn, active_person, describe_tracks, group_people
 from .text import TextBox, TextDetector
 from .tracks import Track, classify, mark_checked, track_shot
 
-ENGINE_VERSION = "2.1.0-dev"
+ENGINE_VERSION = "2.2.0-dev"
 
 
 @dataclass
@@ -258,8 +258,10 @@ def shot_options(analysis: Analysis, ratio: str, options: Options | None = None)
         else:
             rules = plan_shot(s, shot_tracks, target, pic_aspect, analysis.fps, min_crop_h, speaking, captions)
         people_tracks = shot_tracks if has_people else []
+        # Tight framing is the user's opt-in to close-ups that leave out part of the person.
         out.append({"shot": s, "options": shot_alternatives(s, people_tracks, rules, target, pic_aspect,
-                                                            analysis.fps, min_crop_h, captions)})
+                                                            analysis.fps, min_crop_h, captions,
+                                                            strict=options.zoom != "tight")})
     return out
 
 

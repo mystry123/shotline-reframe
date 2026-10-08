@@ -188,7 +188,7 @@ def _directed(analysis_id: str, result: Analysis, ratio: str, options: Options) 
         summary["choices"] = {int(k): v for k, v in summary["choices"].items()}
         summary["cached"] = True
         return summary
-    summary = director.direct(result, shot_options(result, ratio, options), parse_ratio(ratio))
+    summary = director.direct(result, shot_options(result, ratio, options), parse_ratio(ratio), options.output_height)
     if summary.get("used"):
         path.parent.mkdir(exist_ok=True)
         path.write_text(json.dumps(summary))
