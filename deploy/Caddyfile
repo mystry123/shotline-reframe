@@ -1,0 +1,15 @@
+# /etc/caddy/Caddyfile on the shotline-reframe VM.
+# HTTPS for the reframe service with an automatic Let's Encrypt certificate.
+# Port 443 is allowed only from the backend (firewall); port 80 only serves
+# Let's Encrypt's checks and redirects to HTTPS.
+reframe.shotline.in {
+	encode gzip
+	reverse_proxy 127.0.0.1:8090 {
+		# Planning with the AI director can take up to ~2 minutes.
+		transport http {
+			response_header_timeout 180s
+		}
+	}
+	# Access log to the journal: journalctl -u caddy
+	log
+}
