@@ -15,7 +15,8 @@ from dataclasses import dataclass, asdict
 from .decode import decode
 from .bodies import BodyDetector
 from .faces import FaceDetector
-from .layout import Segment, plan_shot
+from .content import ContentBox, content_boxes
+from .layout import Segment, plan_content, plan_shot
 from .probe import Rect, VideoInfo, find_picture_area, probe
 from .shots import Shot, detect_shots
 from .options import QUALITY, Options
@@ -35,6 +36,7 @@ class Analysis:
     turns: list[Turn]
     people: People
     text: list[TextBand]
+    content: list[ContentBox | None]
     quality: str
     fps: float
     timings: dict[str, float]
@@ -75,13 +77,18 @@ def analyze(path: str, words: list[dict] | None = None, quality: str = "standard
         classify(shot_tracks, frames, bodies)
     timings["people"] = time.perf_counter() - t0
 
+    # Where the content is, for shots without people.
+    t0 = time.perf_counter()
+    content = content_boxes(frames)
+    timings["content"] = time.perf_counter() - t0
+
     t0 = time.perf_counter()
     describe_tracks(tracks, frames)
     person_of = group_people(tracks)
     turns = load_turns(words or [])
     people = map_speakers(turns, shots, tracks, person_of)
     timings["speakers"] = time.perf_counter() - t0
-    return Analysis(info, area, shots, tracks, turns, people, text, quality, q["fps"], timings)
+    return Analysis(info, area, shots, tracks, turns, people, text, content, quality, q["fps"], timings)
 
 
 def parse_ratio(ratio: str) -> float:
@@ -148,7 +155,11 @@ def plan(analysis: Analysis, ratio: str, keep_text: list[str] | None = None,
                 return None
             return next((tr for tr in shot_tracks if analysis.people.person_of.get((s.index, tr.track_id)) == pid), None)
 
-        segments.extend(plan_shot(s, shot_tracks, target, pic_aspect, analysis.fps, min_crop_h, speaking))
+        has_people = any(t.is_person for t in shot_tracks)
+        if not has_people and abs(target / pic_aspect - 1) >= 0.03:
+            segments.extend(plan_content(s, analysis.content, analysis.fps, target, pic_aspect))
+        else:
+            segments.extend(plan_shot(s, shot_tracks, target, pic_aspect, analysis.fps, min_crop_h, speaking))
     return {
         "engine": ENGINE_VERSION,
         "source": {"width": analysis.info.width, "height": analysis.info.height, "duration": analysis.info.duration,

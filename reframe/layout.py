@@ -252,3 +252,106 @@ def _plan_shot(shot: Shot, tracks: list[Track], target_aspect: float, pic_aspect
         zw, zh = _crop_size(zone_aspect, pic_aspect, p.median("h"), FACE_FRACTION_SPLIT, min_crop_h / 2)
         zones.append(Zone((0, 0.5 * i, 1, 0.5), _follow(shot, [p], zw, zh, fps), f"track {p.track_id}"))
     return Segment(shot.start, shot.end, "split", zones, "two people apart")
+
+
+# ---------------------------------------------------------------------------
+# Shots without people: follow the content (text, UI, products)
+# ---------------------------------------------------------------------------
+
+CONTENT_MARGIN = 0.04        # keep this much space around content inside the crop
+CONTENT_JUMP = 0.12          # content centre moving this far between samples = a scene change
+MIN_CONTENT_RUN_S = 1.0      # graphics change quickly: a framing may be this short
+MIN_FIT_SWITCH_S = 2.0       # but crop <-> fit switches are rarer
+
+
+def _crop_for_target(target_aspect: float, pic_aspect: float) -> tuple[float, float]:
+    """Largest crop of the picture with the target shape."""
+    if target_aspect <= pic_aspect:
+        return target_aspect / pic_aspect, 1.0
+    return 1.0, pic_aspect / target_aspect
+
+
+def _content_position(box, crop_w: float, crop_h: float) -> tuple[float, float]:
+    """Crop top-left that centres the content, then nudges to keep all of it inside."""
+    x = box.cx - crop_w / 2
+    y = box.cy - crop_h / 2
+    x = min(max(x, box.x1 + CONTENT_MARGIN - crop_w), box.x0 - CONTENT_MARGIN)
+    y = min(max(y, box.y1 + CONTENT_MARGIN - crop_h), box.y0 - CONTENT_MARGIN)
+    return float(np.clip(x, 0, 1 - crop_w)), float(np.clip(y, 0, 1 - crop_h))
+
+
+def plan_content(shot: Shot, boxes: list, fps: float, target_aspect: float, pic_aspect: float) -> list[Segment]:
+    """Segments for a shot with no people, from per-frame content boxes."""
+    crop_w, crop_h = _crop_for_target(target_aspect, pic_aspect)
+    first, last = int(np.ceil(shot.start * fps)), min(len(boxes), int(np.ceil(shot.end * fps)))
+    samples = []   # (time, position or None for "fit")
+    previous = None
+    for i in range(first, last):
+        b = boxes[i]
+        if b is None:  # blank frame: keep what we had
+            samples.append((i / fps, previous))
+            continue
+        fits = (b.x1 - b.x0) + 2 * CONTENT_MARGIN <= crop_w and (b.y1 - b.y0) + 2 * CONTENT_MARGIN <= crop_h
+        previous = _content_position(b, crop_w, crop_h) if fits else None
+        samples.append((i / fps, previous))
+    if not samples:
+        return [_fit_segment(shot, "nothing to frame")]
+
+    # Runs of the same mode, split where the content jumps (an animated scene change).
+    runs: list[list] = []
+    for t, pos in samples:
+        if runs:
+            prev = runs[-1][2][-1]
+            same_mode = (pos is None) == (prev is None)
+            jumped = pos is not None and prev is not None and np.hypot(pos[0] - prev[0], pos[1] - prev[1]) > CONTENT_JUMP
+            if same_mode and not jumped:
+                runs[-1][1] = t + 1 / fps
+                runs[-1][2].append(pos)
+                continue
+        runs.append([t, t + 1 / fps, [pos]])
+
+    # No flicker: merge short runs into their neighbour (fit switches need longer).
+    merged: list[list] = []
+    for r in runs:
+        is_fit = r[2][0] is None
+        min_len = MIN_FIT_SWITCH_S if (is_fit or (merged and merged[-1][2][0] is None)) else MIN_CONTENT_RUN_S
+        if merged and r[1] - r[0] < min_len:
+            prev_fit = merged[-1][2][0] is None
+            # A short crop inside fit (or the other way) becomes fit: safer to show everything.
+            if prev_fit or is_fit:
+                merged[-1][2] = [None] * len(merged[-1][2])
+            merged[-1][1] = r[1]
+            merged[-1][2].extend([None] * len(r[2]) if (prev_fit or is_fit) else r[2])
+        else:
+            merged.append(r)
+    merged[0][0], merged[-1][1] = shot.start, shot.end
+
+    segments = []
+    for start, end, positions in merged:
+        part = Shot(shot.index, start, end)
+        if positions[0] is None or any(p is None for p in positions):
+            segments.append(_fit_segment(part, "content too big for the frame"))
+            continue
+        xs = np.array([p[0] for p in positions])
+        ys = np.array([p[1] for p in positions])
+        slack_x, slack_y = 1 - crop_w, 1 - crop_h
+        if np.ptp(xs) <= 0.02 + 0.3 * slack_x and np.ptp(ys) <= 0.02 + 0.3 * slack_y:
+            x, y = float(np.median(xs)), float(np.median(ys))
+            kfs = [Keyframe(start, x, y, crop_w, crop_h), Keyframe(end, x, y, crop_w, crop_h)]
+        else:
+            times = np.linspace(start, end, len(positions), endpoint=False)
+            # _smooth_path works on centres; positions are top-left corners.
+            sx = _smooth_path(times, xs + crop_w / 2, crop_w, fps) - crop_w / 2
+            sy = _smooth_path(times, ys + crop_h / 2, crop_h, fps) - crop_h / 2
+            kfs = [Keyframe(float(t), float(np.clip(a, 0, slack_x)), float(np.clip(b, 0, slack_y)), crop_w, crop_h)
+                   for t, a, b in zip(times, sx, sy)]
+            kfs.append(Keyframe(end, kfs[-1].x, kfs[-1].y, crop_w, crop_h))
+            kfs = _rdp(kfs, 0.003)
+        segments.append(Segment(start, end, "single", [Zone((0, 0, 1, 1), kfs, "content")], "following the content"))
+    return segments
+
+
+def _fit_segment(shot: Shot, reason: str) -> Segment:
+    return Segment(shot.start, shot.end, "fit",
+                   [Zone((0, 0, 1, 1), [Keyframe(shot.start, 0, 0, 1, 1), Keyframe(shot.end, 0, 0, 1, 1)], "picture")],
+                   reason)
