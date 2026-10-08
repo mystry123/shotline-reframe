@@ -54,21 +54,42 @@ def _bands(mask: np.ndarray, max_gap: int) -> list[tuple[int, int]]:
     return [(a, b) for a, b in bands]
 
 
+class _Rows:
+    """A strip of frames (rows lo.. of the full frame) indexed in full-frame rows."""
+
+    def __init__(self, strip: np.ndarray, lo: int):
+        self.strip, self.lo = strip, lo
+
+    def __getitem__(self, key):
+        frames, rows, *rest = key if isinstance(key, tuple) else (key, slice(None))
+        if isinstance(rows, slice):
+            rows = slice(None if rows.start is None else rows.start - self.lo,
+                         None if rows.stop is None else rows.stop - self.lo, rows.step)
+        else:
+            rows = rows - self.lo
+        return self.strip[(frames, rows, *rest)]
+
+
 def detect_text_bands(info: VideoInfo, area: Rect) -> list[TextBand]:
     if area.h >= info.height - 4 and area.w >= info.width - 4:
         return []  # no bars, nothing outside the picture
     # 2 samples a second (at most 600) so a 1-second title is never missed.
-    frames = sample_frames(info, count=int(min(600, max(20, info.duration * 2))))
-    if frames.size == 0:
-        return []
-    n, H, W = frames.shape
-    sample_s = info.duration / n
-    min_samples = max(1, int(np.ceil(MIN_ON_SCREEN_S / sample_s)))
-    lit = frames > 60  # text is bright against the bars
+    # Only the bars are decoded (a strip per bar), so long videos stay small.
+    count = int(min(600, max(20, info.duration * 2)))
+    H, W = info.height, info.width
     out: list[TextBand] = []
     for region, (lo, hi) in (("top", (0, area.y)), ("bottom", (area.y + area.h, H))):
         if hi - lo < 6:
             continue
+        strip = sample_frames(info, count=count, rows=(lo, hi))
+        if strip.size == 0:
+            continue
+        # The strip stands in for rows lo..hi of the frame: index it as if it were the frame.
+        frames = _Rows(strip, lo)
+        n = strip.shape[0]
+        sample_s = info.duration / n
+        min_samples = max(1, int(np.ceil(MIN_ON_SCREEN_S / sample_s)))
+        lit = _Rows(strip > 60, lo)  # text is bright against the bars
         rows_lit = lit[:, lo:hi, :].mean(axis=2)                  # (n, rows)
         has_text = (rows_lit > TEXT_ROW_MIN).sum(axis=0) >= min_samples
         for a, b in _bands(has_text, max_gap=max(3, H // 60)):
