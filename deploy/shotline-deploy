@@ -3,7 +3,9 @@
 # The CI deployer may run only this through sudo.
 #
 #   shotline-deploy <sha>            deploy a commit of main (repo's deploy.sh, as `reframe`)
-#   shotline-deploy --status <sha>   0 = deployed, 1 = failed / rolled back, 10 = still running
+#   shotline-deploy --status <sha>   0 = deployed, 20 = failed (rolled back), 10 = still running
+#
+# (Distinct codes, so a caller can tell a failed deploy from a failed connection.)
 #
 # The deploy runs as its own systemd job, so it finishes even if the SSH
 # connection that started it drops; --status lets the caller check later.
@@ -19,7 +21,7 @@ if [[ "${1:-}" == "--status" ]]; then
   last="$(grep -E " (deployed|refused|health check failed for|ROLLBACK FAILED)" "$LOG" | grep -E "$sha" | tail -1 || true)"
   echo "${last:-no record for $sha}"
   [[ "$last" == *" deployed $sha"* ]] && exit 0
-  exit 1
+  exit 20
 fi
 
 sha="${1:-}"; valid "$sha"

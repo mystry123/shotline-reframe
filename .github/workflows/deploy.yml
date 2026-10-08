@@ -73,15 +73,23 @@ jobs:
             gcloud compute ssh "$VM" --zone "$ZONE" --project "$PROJECT" --tunnel-through-iap --quiet \
               --command "$1" -- -o ServerAliveInterval=20 -o ServerAliveCountMax=6
           }
-          if vm "sudo /usr/local/bin/shotline-deploy $SHA"; then exit 0; fi
-          echo "Deploy command ended abnormally; checking the result on the VM"
+          set +e
+          vm "sudo /usr/local/bin/shotline-deploy $SHA"; rc=$?
+          set -e
+          [ $rc -eq 0 ] && exit 0
+          echo "Deploy command ended with $rc; checking the result on the VM"
+          unreachable=0
           for i in $(seq 1 40); do
             set +e; vm "sudo /usr/local/bin/shotline-deploy --status $SHA"; rc=$?; set -e
             case $rc in
-              0) echo "Deployed $SHA"; exit 0 ;;
-              10) sleep 15 ;;
-              1) echo "Deploy failed (the VM rolled back to the previous commit)"; exit 1 ;;
-              *) sleep 15 ;;   # connection problem: try again
+              0)  echo "Deployed $SHA"; exit 0 ;;
+              10) unreachable=0; sleep 15 ;;                 # still running
+              20) echo "Deploy failed on the VM; it rolled back to the previous commit"; exit 1 ;;
+              *)  unreachable=$((unreachable + 1))            # couldn't connect or run the check
+                  if [ $unreachable -ge 4 ]; then
+                    echo "Couldn't reach the VM (see the errors above); nothing was changed by this run"; exit 1
+                  fi
+                  sleep 15 ;;
             esac
           done
           echo "Timed out waiting for the deploy result"; exit 1
