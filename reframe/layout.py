@@ -373,9 +373,39 @@ def crop_height(seg: Segment) -> float:
     return min((k.h / max(z.canvas[3], 1e-6)) for z in seg.zones for k in z.keyframes)
 
 
+def avoid_band(segs: list[Segment], band, target_aspect: float, pic_aspect: float) -> list[Segment] | None:
+    """The segments changed so no crop shows any of `band` (x0, y0, x1, y1;
+    burned-in captions being replaced): crops move up, framed regions end
+    above it. None when that's impossible (whole-picture views, split
+    screens, crops taller than the space above the band)."""
+    limit = band[1] - KEEP_MARGIN
+    out = []
+    for seg in segs:
+        if seg.layout in ("fit", "full", "split") or len(seg.zones) != 1:
+            return None
+        zone = seg.zones[0]
+        kfs = []
+        for k in zone.keyframes:
+            k = Keyframe(k.t, k.x, k.y, k.w, k.h)
+            if k.y + k.h > limit:
+                if seg.layout == "framed":
+                    k.h = limit - k.y
+                    if k.h < 0.1:
+                        return None
+                else:
+                    k.y = limit - k.h
+                    if k.y < 0:
+                        return None
+            kfs.append(k)
+        canvas = framed_canvas(kfs[0].w, kfs[0].h, target_aspect, pic_aspect) if seg.layout == "framed" else zone.canvas
+        out.append(Segment(seg.start, seg.end, seg.layout, [Zone(canvas, kfs, zone.subject)],
+                           seg.reason + " (burned-in captions left out, to be replaced)", dict(seg.info)))
+    return out
+
+
 def shot_alternatives(shot: Shot, tracks: list[Track], rules: list[Segment], target_aspect: float,
                       pic_aspect: float, fps: float, min_crop_h: float, captions=None,
-                      strict: bool = True) -> dict[str, list[Segment]]:
+                      strict: bool = True, avoid=None) -> dict[str, list[Segment]] | None:
     """Named framings of a shot, starting with the rules' choice ("rules").
 
     Every alternative is checked before it is offered: it keeps the face and
@@ -387,13 +417,24 @@ def shot_alternatives(shot: Shot, tracks: list[Track], rules: list[Segment], tar
     people = [t for t in tracks if t.is_person]
     person = people[0] if len(people) == 1 else None
 
+    checked_body = upper_body(person) if person is not None else None
+    if checked_body is not None and avoid is not None:
+        # Replacing captions leaves the strip behind them out on purpose: the
+        # person check counts only what is above it.
+        b = checked_body
+        checked_body = (b[0], b[1], b[2], max(b[1] + 0.05, min(b[3], avoid[1] - KEEP_MARGIN)))
+
     def measure(segs: list[Segment]) -> None:
         for seg in segs:
             seg.info["crop_h"] = round(crop_height(seg), 3)
-            if person is not None:
-                seg.info["person_kept"] = round(share_kept(seg, upper_body(person)), 3)
+            if checked_body is not None:
+                seg.info["person_kept"] = round(share_kept(seg, checked_body), 3)
 
     def add(name: str, segs: list[Segment]) -> None:
+        if avoid is not None:
+            segs = avoid_band(segs, avoid, target_aspect, pic_aspect)
+            if segs is None:
+                return
         measure(segs)
         for seg in segs:
             if seg.layout == "framed":
@@ -413,9 +454,14 @@ def shot_alternatives(shot: Shot, tracks: list[Track], rules: list[Segment], tar
         if not any(_same_framing(segs, v) for v in out.values()):
             out[name] = segs
 
+    rules_ok = True
+    if avoid is not None:
+        moved = avoid_band(rules, avoid, target_aspect, pic_aspect)
+        rules_ok = moved is not None
+        out["rules"] = rules = moved or rules
     measure(rules)
     if abs(target_aspect / pic_aspect - 1) < 0.03:
-        return out
+        return out if rules_ok else None
     if person is not None:
         p = person
         tag = f"track {p.track_id}"
@@ -453,15 +499,17 @@ def shot_alternatives(shot: Shot, tracks: list[Track], rules: list[Segment], tar
     # The rules' framing is also the fallback when the director can't be
     # reached, so it must pass the same checks: if it cuts too much of the
     # person or zooms too far, the closest framing that passes takes its place.
-    if person is not None and len(out) > 1:
-        def passes(segs: list[Segment]) -> bool:
-            return all(seg.info["crop_h"] >= min_crop_h - ZOOM_TOLERANCE
-                       and (not strict or seg.info["person_kept"] >= SUBJECT_KEEP) for seg in segs)
-        if not passes(out["rules"]):
-            for name in ("upper", "whole", "whole-wide", "body", "medium", "close", "wide"):
-                if name in out and passes(out[name]):
-                    out["rules"] = out.pop(name)
-                    break
+    def passes(segs: list[Segment]) -> bool:
+        return all(seg.info["crop_h"] >= min_crop_h - ZOOM_TOLERANCE
+                   and (person is None or not strict or seg.info["person_kept"] >= SUBJECT_KEEP) for seg in segs)
+    if (person is not None or not rules_ok) and len(out) > 1 and (not rules_ok or not passes(out["rules"])):
+        for name in ("upper", "whole", "whole-wide", "body", "medium", "close", "wide"):
+            if name in out and passes(out[name]):
+                out["rules"] = out.pop(name)
+                rules_ok = True
+                break
+    if not rules_ok:
+        return None          # nothing avoids the band: the caller keeps the captions instead
     return out
 
 

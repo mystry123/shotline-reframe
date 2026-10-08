@@ -99,3 +99,50 @@ def test_low_resolution_sources_get_no_zoomed_crops():
     for name, segs in _alternatives("balanced", pic_px_h=360).items():
         if name != "rules":
             assert all(seg.info["crop_h"] >= 0.99 for seg in segs)
+
+
+# --- Replacing burned-in captions -------------------------------------------------
+
+from reframe.layout import avoid_band  # noqa: E402
+
+BAND = (0.05, 0.70, 0.95, 0.85)     # captions in the lower part of a portrait picture
+
+
+def _single(y, h):
+    return [Segment(0, 1, "single", [Zone((0, 0, 1, 1), [Keyframe(0, 0.0, y, 1.0, h)])], "")]
+
+
+def test_crops_move_up_to_leave_the_captions_out():
+    moved = avoid_band(_single(0.5, 0.32), BAND, WIDE, PORTRAIT)
+    k = moved[0].zones[0].keyframes[0]
+    assert k.y + k.h <= BAND[1] and k.h == pytest.approx(0.32)
+
+
+def test_framed_regions_end_above_the_captions():
+    framed = [Segment(0, 1, "framed", [Zone((0.3, 0, 0.4, 1), [Keyframe(0, 0.1, 0.1, 0.8, 0.85)])], "")]
+    k = avoid_band(framed, BAND, WIDE, PORTRAIT)[0].zones[0].keyframes[0]
+    assert k.y + k.h <= BAND[1] and k.y == pytest.approx(0.1)
+
+
+def test_views_of_the_whole_picture_cannot_leave_captions_out():
+    fit = [Segment(0, 1, "fit", [Zone((0, 0, 1, 1), [Keyframe(0, 0, 0, 1, 1)])], "")]
+    assert avoid_band(fit, BAND, WIDE, PORTRAIT) is None
+    assert avoid_band(_single(0.0, 0.9), BAND, WIDE, PORTRAIT) is None      # taller than the space above
+
+
+def test_replacing_offers_only_framings_without_the_captions():
+    shot = Shot(0, 0.0, 4.0)
+    rules = [Segment(0, 4, "fit", [Zone((0, 0, 1, 1), [Keyframe(0, 0, 0, 1, 1), Keyframe(4, 0, 0, 1, 1)])], "")]
+    opts = shot_alternatives(shot, [_person()], rules, WIDE, PORTRAIT, 5.0, Options().min_crop_height(1280),
+                             None, avoid=BAND)
+    assert opts is not None and opts["rules"][0].layout != "fit"
+    for segs in opts.values():
+        for k in segs[0].zones[0].keyframes:
+            assert k.y + k.h <= BAND[1]
+
+
+def test_captions_over_the_face_cannot_be_replaced():
+    shot = Shot(0, 0.0, 4.0)
+    rules = [Segment(0, 4, "fit", [Zone((0, 0, 1, 1), [Keyframe(0, 0, 0, 1, 1), Keyframe(4, 0, 0, 1, 1)])], "")]
+    over_face = (0.05, 0.12, 0.95, 0.3)
+    assert shot_alternatives(shot, [_person()], rules, WIDE, PORTRAIT, 5.0, 0.35, None, avoid=over_face) is None

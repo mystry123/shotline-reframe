@@ -44,3 +44,4 @@ def test_unknown_analysis_and_bad_plan_input(client):
     assert client.get("/analyses/" + "0" * 32, headers=H).status_code == 404
     assert client.post("/analyses/x/plan", json={"ratio": "wide"}, headers=H).status_code == 400
     assert client.post("/analyses/x/plan", json={"ratio": "9:16", "zoom": "huge"}, headers=H).status_code == 400
+    assert client.post("/analyses/x/plan", json={"ratio": "9:16", "captions": "erase"}, headers=H).status_code == 400
