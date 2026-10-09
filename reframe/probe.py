@@ -16,6 +16,8 @@ from dataclasses import dataclass, asdict
 
 import numpy as np
 
+from .borders import find_blurred_bars
+
 
 @dataclass(frozen=True)
 class VideoInfo:
@@ -64,13 +66,19 @@ def probe(path: str) -> VideoInfo:
     return VideoInfo(path, w, h, fps, duration, has_audio, rotation)
 
 
-def sample_frames(info: VideoInfo, count: int = 40, width: int = 0) -> np.ndarray:
+def sample_frames(info: VideoInfo, count: int = 40, width: int = 0, rows: tuple[int, int] | None = None) -> np.ndarray:
     """`count` frames spread over the video, grayscale, at display orientation
-    (ffmpeg applies rotation). Optionally scaled to `width`."""
+    (ffmpeg applies rotation). Optionally scaled to `width`, or only the
+    full-resolution rows [rows[0], rows[1]) (a strip, e.g. a bar)."""
     fps = max(count / max(info.duration, 0.1), 0.01)
     scale = f",scale={width}:-2" if width else ""
     w = width or info.width
     h = int(round(info.height * (w / info.width) / 2) * 2) if width else info.height
+    if rows is not None:
+        # Gray first: 4:2:0 video can only be cropped to even rows, and an odd
+        # strip would come out a row short and misalign every frame after it.
+        scale = f",format=gray,crop={info.width}:{rows[1] - rows[0]}:0:{rows[0]}"
+        w, h = info.width, rows[1] - rows[0]
     raw = subprocess.run(
         ["ffmpeg", "-v", "error", "-nostdin", "-i", info.path, "-an",
          "-vf", f"fps={fps:.6f}{scale}", "-pix_fmt", "gray", "-f", "rawvideo", "pipe:1"],
@@ -102,6 +110,9 @@ def _longest_true_run(mask: np.ndarray, max_gap: int = 0) -> tuple[int, int]:
     return best
 
 
+MIN_BARS = 0.02     # bars thinner than this share of the frame (both together) are ignored
+
+
 def find_picture_area(info: VideoInfo, frames: np.ndarray | None = None) -> Rect:
     """The rectangle holding the real picture (full frame when there are no bars)."""
     if frames is None:
@@ -125,6 +136,18 @@ def find_picture_area(info: VideoInfo, frames: np.ndarray | None = None) -> Rect
     sy, sx = info.height / h, info.width / w
     y0, y1 = rows if rows[1] - rows[0] >= h * 0.25 else (0, h)
     x0, x1 = cols if cols[1] - cols[0] >= w * 0.25 else (0, w)
+    # Real bars are a few percent of the frame or more; a sliver of dark rows
+    # at an edge (a floor in shadow, a vignette) is picture, not a bar.
+    if y0 + (h - y1) < MIN_BARS * h:
+        y0, y1 = 0, h
+    if x0 + (w - x1) < MIN_BARS * w:
+        x0, x1 = 0, w
     rect = Rect(int(round(x0 * sx)), int(round(y0 * sy)), int(round((x1 - x0) * sx)), int(round((y1 - y0) * sy)))
+    if (x0, y0, x1, y1) == (0, 0, w, h):
+        # No black bars: the bars may be a blurred copy of the picture instead.
+        blurred = find_blurred_bars(frames)
+        if blurred is not None:
+            bx, by, bw, bh = blurred
+            rect = Rect(int(round(bx * sx)), int(round(by * sy)), int(round(bw * sx)), int(round(bh * sy)))
     # Even sizes keep ffmpeg's crop and scale filters happy.
     return Rect(rect.x, rect.y, rect.w - rect.w % 2, rect.h - rect.h % 2)

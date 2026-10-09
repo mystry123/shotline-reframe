@@ -1,0 +1,11 @@
+{
+ "status": "reviewed",
+ "note": "Phone video (rotation flag, variable frame rate ~30 fps nominal 120), 5m43s: handheld walk, swung and set on the floor at ~11-13 s (a foot briefly covers the lens), then a static low view of a group of ~10 people. One continuous take: no cuts.",
+ "picture": {
+  "x": 0,
+  "y": 0,
+  "w": 1080,
+  "h": 1920
+ },
+ "transitions": []
+}

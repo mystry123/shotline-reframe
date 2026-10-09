@@ -1,0 +1,847 @@
+{
+ "clips": {
+  "clip001": {
+   "analysis": {
+    "duration": 40.24,
+    "picture_iou": 1.0,
+    "recall_cut": 1.0,
+    "seconds": 11.1,
+    "transition_f1": 1.0,
+    "transition_found": 6,
+    "transition_truth": 6
+   },
+   "plans": {
+    "1:1": {
+     "caption_cut_rate": null,
+     "face_cut_rate": 0.0,
+     "jerk_p95": 0.0,
+     "jumps": 0,
+     "person_kept": 1.0,
+     "reversals_per_min": 0.0,
+     "zoom_p95": 5.35
+    },
+    "2:3": {
+     "caption_cut_rate": null,
+     "face_cut_rate": 0.0,
+     "jerk_p95": 0.0,
+     "jumps": 0,
+     "person_kept": 1.0,
+     "reversals_per_min": 0.0,
+     "zoom_p95": 5.35
+    },
+    "9:16": {
+     "caption_cut_rate": null,
+     "face_cut_rate": 0.0,
+     "jerk_p95": 0.0,
+     "jumps": 0,
+     "person_kept": 1.0,
+     "reversals_per_min": 0.0,
+     "zoom_p95": 5.35
+    }
+   }
+  },
+  "clip002": {
+   "analysis": {
+    "duration": 43.05,
+    "picture_iou": 1.0,
+    "seconds": 31.1
+   },
+   "plans": {
+    "16:9": {
+     "caption_cut_rate": null,
+     "face_cut_rate": null,
+     "jerk_p95": 0.0,
+     "jumps": 0,
+     "person_kept": null,
+     "reversals_per_min": 0.0,
+     "zoom_p95": 3.71
+    },
+    "1:1": {
+     "caption_cut_rate": null,
+     "face_cut_rate": null,
+     "jerk_p95": 0.0,
+     "jumps": 0,
+     "person_kept": null,
+     "reversals_per_min": 0.0,
+     "zoom_p95": 2.25
+    },
+    "2:3": {
+     "caption_cut_rate": null,
+     "face_cut_rate": null,
+     "jerk_p95": 0.0,
+     "jumps": 0,
+     "person_kept": null,
+     "reversals_per_min": 0.0,
+     "zoom_p95": 1.5
+    }
+   }
+  },
+  "clip003": {
+   "analysis": {
+    "duration": 58.57,
+    "picture_iou": 1.0,
+    "recall_cut": 1.0,
+    "seconds": 42.8,
+    "transition_f1": 1.0,
+    "transition_found": 26,
+    "transition_truth": 26
+   },
+   "plans": {
+    "16:9": {
+     "caption_cut_rate": 0.0,
+     "face_cut_rate": 0.0,
+     "jerk_p95": 0.0,
+     "jumps": 0,
+     "person_kept": 0.98,
+     "reversals_per_min": 0.0,
+     "zoom_p95": 1.42
+    },
+    "1:1": {
+     "caption_cut_rate": 0.0,
+     "face_cut_rate": 0.0,
+     "jerk_p95": 0.0,
+     "jumps": 0,
+     "person_kept": 0.972,
+     "reversals_per_min": 0.0,
+     "zoom_p95": 1.5
+    },
+    "2:3": {
+     "caption_cut_rate": 0.0,
+     "face_cut_rate": 0.0,
+     "jerk_p95": 0.0,
+     "jumps": 0,
+     "person_kept": 0.888,
+     "reversals_per_min": 0.0,
+     "zoom_p95": 1.25
+    }
+   }
+  },
+  "clip004": {
+   "analysis": {
+    "duration": 343.12,
+    "picture_iou": 1.0,
+    "seconds": 305.5,
+    "transition_f1": 1.0,
+    "transition_found": 0,
+    "transition_truth": 0
+   },
+   "plans": {
+    "16:9": {
+     "caption_cut_rate": null,
+     "face_cut_rate": null,
+     "jerk_p95": 0.0,
+     "jumps": 0,
+     "person_kept": null,
+     "reversals_per_min": 0.0,
+     "zoom_p95": 0.56
+    },
+    "1:1": {
+     "caption_cut_rate": null,
+     "face_cut_rate": null,
+     "jerk_p95": 0.0,
+     "jumps": 0,
+     "person_kept": null,
+     "reversals_per_min": 0.0,
+     "zoom_p95": 0.56
+    },
+    "2:3": {
+     "caption_cut_rate": null,
+     "face_cut_rate": null,
+     "jerk_p95": 0.0,
+     "jumps": 0,
+     "person_kept": null,
+     "reversals_per_min": 0.0,
+     "zoom_p95": 0.56
+    }
+   }
+  },
+  "clip005": {
+   "analysis": {
+    "duration": 6.31,
+    "picture_iou": 1.0,
+    "seconds": 7.5,
+    "transition_f1": 1.0,
+    "transition_found": 0,
+    "transition_truth": 0
+   },
+   "plans": {
+    "16:9": {
+     "caption_cut_rate": null,
+     "face_cut_rate": null,
+     "jerk_p95": 0.0,
+     "jumps": 0,
+     "person_kept": null,
+     "reversals_per_min": 0.0,
+     "zoom_p95": 2.22
+    },
+    "1:1": {
+     "caption_cut_rate": null,
+     "face_cut_rate": null,
+     "jerk_p95": 0.0,
+     "jumps": 0,
+     "person_kept": null,
+     "reversals_per_min": 0.0,
+     "zoom_p95": 1.25
+    },
+    "2:3": {
+     "caption_cut_rate": null,
+     "face_cut_rate": null,
+     "jerk_p95": 0.0,
+     "jumps": 0,
+     "person_kept": null,
+     "reversals_per_min": 0.0,
+     "zoom_p95": 0.83
+    },
+    "9:16": {
+     "caption_cut_rate": null,
+     "face_cut_rate": null,
+     "jerk_p95": 2.122,
+     "jumps": 0,
+     "person_kept": null,
+     "reversals_per_min": 0.0,
+     "zoom_p95": 0.76
+    }
+   }
+  },
+  "clip006": {
+   "analysis": {
+    "duration": 28.78,
+    "picture_iou": 1.0,
+    "seconds": 20.8,
+    "transition_f1": 1.0,
+    "transition_found": 0,
+    "transition_truth": 0
+   },
+   "plans": {
+    "16:9": {
+     "caption_cut_rate": null,
+     "face_cut_rate": 0.0,
+     "jerk_p95": 0.0,
+     "jumps": 0,
+     "person_kept": 1.0,
+     "reversals_per_min": 0.0,
+     "zoom_p95": 2.1
+    },
+    "1:1": {
+     "caption_cut_rate": null,
+     "face_cut_rate": 0.0,
+     "jerk_p95": 0.0,
+     "jumps": 0,
+     "person_kept": 0.901,
+     "reversals_per_min": 0.0,
+     "zoom_p95": 2.5
+    },
+    "2:3": {
+     "caption_cut_rate": null,
+     "face_cut_rate": 0.0,
+     "jerk_p95": 0.0,
+     "jumps": 0,
+     "person_kept": 0.901,
+     "reversals_per_min": 0.0,
+     "zoom_p95": 2.5
+    }
+   }
+  },
+  "clip007": {
+   "analysis": {
+    "duration": 16.86,
+    "picture_iou": 1.0,
+    "seconds": 13.3,
+    "transition_f1": 1.0,
+    "transition_found": 0,
+    "transition_truth": 0
+   },
+   "plans": {
+    "16:9": {
+     "caption_cut_rate": null,
+     "face_cut_rate": 0.0,
+     "jerk_p95": 0.0,
+     "jumps": 0,
+     "person_kept": 1.0,
+     "reversals_per_min": 0.0,
+     "zoom_p95": 1.26
+    },
+    "1:1": {
+     "caption_cut_rate": null,
+     "face_cut_rate": 0.0,
+     "jerk_p95": 0.0,
+     "jumps": 0,
+     "person_kept": 1.0,
+     "reversals_per_min": 0.0,
+     "zoom_p95": 1.26
+    },
+    "2:3": {
+     "caption_cut_rate": null,
+     "face_cut_rate": 0.0,
+     "jerk_p95": 0.0,
+     "jumps": 0,
+     "person_kept": 0.965,
+     "reversals_per_min": 0.0,
+     "zoom_p95": 1.5
+    }
+   }
+  },
+  "clip008": {
+   "analysis": {
+    "duration": 325.84,
+    "picture_iou": 1.0,
+    "seconds": 101.2,
+    "speaker_answered": 1.0,
+    "wrong_speaker_rate": 0.0
+   },
+   "plans": {
+    "1:1": {
+     "caption_cut_rate": 0.0,
+     "face_cut_rate": 0.0,
+     "jerk_p95": 0.0,
+     "jumps": 0,
+     "person_kept": 1.0,
+     "reversals_per_min": 1.29,
+     "zoom_p95": 2.5
+    },
+    "2:3": {
+     "caption_cut_rate": 0.0,
+     "face_cut_rate": 0.0,
+     "jerk_p95": 0.0,
+     "jumps": 0,
+     "person_kept": 1.0,
+     "reversals_per_min": 1.1,
+     "zoom_p95": 2.5
+    },
+    "9:16": {
+     "caption_cut_rate": 0.0,
+     "face_cut_rate": 0.0,
+     "jerk_p95": 0.0,
+     "jumps": 0,
+     "person_kept": 1.0,
+     "reversals_per_min": 1.1,
+     "zoom_p95": 2.5
+    }
+   }
+  },
+  "local/real_blurred_bars": {
+   "analysis": {
+    "duration": 20.0,
+    "picture_iou": 1.0,
+    "recall_cut": 1.0,
+    "seconds": 14.5,
+    "transition_f1": 1.0,
+    "transition_found": 12,
+    "transition_truth": 12
+   },
+   "plans": {
+    "16:9": {
+     "caption_cut_rate": 0.0,
+     "face_cut_rate": 0.0,
+     "jerk_p95": 0.0,
+     "jumps": 0,
+     "person_kept": 0.989,
+     "reversals_per_min": 0.0,
+     "zoom_p95": 1.29
+    },
+    "1:1": {
+     "caption_cut_rate": 0.0,
+     "face_cut_rate": 0.0,
+     "jerk_p95": 0.0,
+     "jumps": 0,
+     "person_kept": 0.984,
+     "reversals_per_min": 0.0,
+     "zoom_p95": 1.41
+    },
+    "2:3": {
+     "caption_cut_rate": 0.0,
+     "face_cut_rate": 0.0,
+     "jerk_p95": 0.0,
+     "jumps": 0,
+     "person_kept": 0.93,
+     "reversals_per_min": 0.0,
+     "zoom_p95": 1.22
+    }
+   }
+  },
+  "local/real_dissolve": {
+   "analysis": {
+    "duration": 7.0,
+    "picture_iou": 1.0,
+    "recall_dissolve": 1.0,
+    "seconds": 6.0,
+    "transition_f1": 1.0,
+    "transition_found": 1,
+    "transition_truth": 1
+   },
+   "plans": {
+    "16:9": {
+     "caption_cut_rate": null,
+     "face_cut_rate": 0.0,
+     "jerk_p95": 0.0,
+     "jumps": 0,
+     "person_kept": 1.0,
+     "reversals_per_min": 0.0,
+     "zoom_p95": 4.0
+    },
+    "1:1": {
+     "caption_cut_rate": null,
+     "face_cut_rate": 0.0,
+     "jerk_p95": 0.0,
+     "jumps": 0,
+     "person_kept": 0.903,
+     "reversals_per_min": 0.0,
+     "zoom_p95": 2.5
+    },
+    "2:3": {
+     "caption_cut_rate": null,
+     "face_cut_rate": 0.0,
+     "jerk_p95": 0.0,
+     "jumps": 0,
+     "person_kept": 0.903,
+     "reversals_per_min": 0.0,
+     "zoom_p95": 2.5
+    }
+   }
+  },
+  "local/real_fade": {
+   "analysis": {
+    "duration": 7.0,
+    "picture_iou": 1.0,
+    "recall_fade": 1.0,
+    "seconds": 6.0,
+    "transition_f1": 1.0,
+    "transition_found": 1,
+    "transition_truth": 1
+   },
+   "plans": {
+    "16:9": {
+     "caption_cut_rate": null,
+     "face_cut_rate": 0.0,
+     "jerk_p95": 0.0,
+     "jumps": 0,
+     "person_kept": 1.0,
+     "reversals_per_min": 0.0,
+     "zoom_p95": 4.0
+    },
+    "1:1": {
+     "caption_cut_rate": null,
+     "face_cut_rate": 0.0,
+     "jerk_p95": 0.0,
+     "jumps": 0,
+     "person_kept": 0.903,
+     "reversals_per_min": 0.0,
+     "zoom_p95": 2.5
+    },
+    "2:3": {
+     "caption_cut_rate": null,
+     "face_cut_rate": 0.0,
+     "jerk_p95": 0.0,
+     "jumps": 0,
+     "person_kept": 0.903,
+     "reversals_per_min": 0.0,
+     "zoom_p95": 2.5
+    }
+   }
+  },
+  "local/real_moving_subject": {
+   "analysis": {
+    "duration": 12.03,
+    "picture_iou": 1.0,
+    "seconds": 3.6,
+    "transition_f1": 1.0,
+    "transition_found": 0,
+    "transition_truth": 0
+   },
+   "plans": {
+    "1:1": {
+     "caption_cut_rate": null,
+     "face_cut_rate": 0.0,
+     "jerk_p95": 4.1,
+     "jumps": 0,
+     "person_kept": 1.0,
+     "reversals_per_min": 4.99,
+     "zoom_p95": 2.5
+    },
+    "2:3": {
+     "caption_cut_rate": null,
+     "face_cut_rate": 0.0,
+     "jerk_p95": 5.963,
+     "jumps": 0,
+     "person_kept": 1.0,
+     "reversals_per_min": 4.99,
+     "zoom_p95": 2.5
+    },
+    "9:16": {
+     "caption_cut_rate": null,
+     "face_cut_rate": 0.0,
+     "jerk_p95": 10.203,
+     "jumps": 0,
+     "person_kept": 1.0,
+     "reversals_per_min": 4.99,
+     "zoom_p95": 2.5
+    }
+   }
+  },
+  "local/real_two_speakers": {
+   "analysis": {
+    "duration": 6.0,
+    "picture_iou": 0.9734,
+    "seconds": 1.9,
+    "transition_f1": 1.0,
+    "transition_found": 0,
+    "transition_truth": 0
+   },
+   "plans": {
+    "16:9": {
+     "caption_cut_rate": null,
+     "face_cut_rate": null,
+     "jerk_p95": 0.0,
+     "jumps": 0,
+     "person_kept": null,
+     "reversals_per_min": 0.0,
+     "zoom_p95": 3.0
+    },
+    "1:1": {
+     "caption_cut_rate": null,
+     "face_cut_rate": null,
+     "jerk_p95": 0.0,
+     "jumps": 0,
+     "person_kept": null,
+     "reversals_per_min": 0.0,
+     "zoom_p95": 3.0
+    },
+    "2:3": {
+     "caption_cut_rate": null,
+     "face_cut_rate": null,
+     "jerk_p95": 0.0,
+     "jumps": 0,
+     "person_kept": null,
+     "reversals_per_min": 0.0,
+     "zoom_p95": 3.0
+    },
+    "9:16": {
+     "caption_cut_rate": null,
+     "face_cut_rate": null,
+     "jerk_p95": 0.0,
+     "jumps": 0,
+     "person_kept": null,
+     "reversals_per_min": 0.0,
+     "zoom_p95": 3.0
+    }
+   }
+  },
+  "syn/black_bars": {
+   "analysis": {
+    "duration": 4.0,
+    "picture_iou": 1.0,
+    "seconds": 3.0,
+    "transition_f1": 1.0,
+    "transition_found": 0,
+    "transition_truth": 0
+   },
+   "plans": {
+    "16:9": {
+     "caption_cut_rate": null,
+     "face_cut_rate": null,
+     "jerk_p95": 0.0,
+     "jumps": 0,
+     "person_kept": null,
+     "reversals_per_min": 0.0,
+     "zoom_p95": 1.0
+    },
+    "1:1": {
+     "caption_cut_rate": null,
+     "face_cut_rate": null,
+     "jerk_p95": 0.0,
+     "jumps": 0,
+     "person_kept": null,
+     "reversals_per_min": 0.0,
+     "zoom_p95": 1.0
+    },
+    "2:3": {
+     "caption_cut_rate": null,
+     "face_cut_rate": null,
+     "jerk_p95": 0.0,
+     "jumps": 0,
+     "person_kept": null,
+     "reversals_per_min": 0.0,
+     "zoom_p95": 1.0
+    }
+   }
+  },
+  "syn/blurred_bars": {
+   "analysis": {
+    "duration": 4.0,
+    "picture_iou": 1.0,
+    "seconds": 3.2,
+    "transition_f1": 1.0,
+    "transition_found": 0,
+    "transition_truth": 0
+   },
+   "plans": {
+    "16:9": {
+     "caption_cut_rate": null,
+     "face_cut_rate": null,
+     "jerk_p95": 0.0,
+     "jumps": 0,
+     "person_kept": null,
+     "reversals_per_min": 0.0,
+     "zoom_p95": 1.0
+    },
+    "1:1": {
+     "caption_cut_rate": null,
+     "face_cut_rate": null,
+     "jerk_p95": 0.0,
+     "jumps": 0,
+     "person_kept": null,
+     "reversals_per_min": 0.0,
+     "zoom_p95": 1.0
+    },
+    "2:3": {
+     "caption_cut_rate": null,
+     "face_cut_rate": null,
+     "jerk_p95": 0.0,
+     "jumps": 0,
+     "person_kept": null,
+     "reversals_per_min": 0.0,
+     "zoom_p95": 1.0
+    }
+   }
+  },
+  "syn/blurred_bars_tall": {
+   "analysis": {
+    "duration": 4.0,
+    "picture_iou": 1.0,
+    "seconds": 3.1,
+    "transition_f1": 1.0,
+    "transition_found": 0,
+    "transition_truth": 0
+   },
+   "plans": {
+    "1:1": {
+     "caption_cut_rate": null,
+     "face_cut_rate": null,
+     "jerk_p95": 0.0,
+     "jumps": 0,
+     "person_kept": null,
+     "reversals_per_min": 0.0,
+     "zoom_p95": 1.0
+    },
+    "2:3": {
+     "caption_cut_rate": null,
+     "face_cut_rate": null,
+     "jerk_p95": 0.0,
+     "jumps": 0,
+     "person_kept": null,
+     "reversals_per_min": 0.0,
+     "zoom_p95": 0.67
+    },
+    "9:16": {
+     "caption_cut_rate": null,
+     "face_cut_rate": null,
+     "jerk_p95": 0.0,
+     "jumps": 0,
+     "person_kept": null,
+     "reversals_per_min": 0.0,
+     "zoom_p95": 0.56
+    }
+   }
+  },
+  "syn/cuts": {
+   "analysis": {
+    "duration": 6.0,
+    "picture_iou": 1.0,
+    "recall_cut": 1.0,
+    "seconds": 2.0,
+    "transition_f1": 1.0,
+    "transition_found": 2,
+    "transition_truth": 2
+   },
+   "plans": {
+    "1:1": {
+     "caption_cut_rate": null,
+     "face_cut_rate": null,
+     "jerk_p95": 0.0,
+     "jumps": 0,
+     "person_kept": null,
+     "reversals_per_min": 0.0,
+     "zoom_p95": 0.84
+    },
+    "2:3": {
+     "caption_cut_rate": null,
+     "face_cut_rate": null,
+     "jerk_p95": 0.0,
+     "jumps": 0,
+     "person_kept": null,
+     "reversals_per_min": 0.0,
+     "zoom_p95": 0.56
+    },
+    "9:16": {
+     "caption_cut_rate": null,
+     "face_cut_rate": null,
+     "jerk_p95": 0.0,
+     "jumps": 0,
+     "person_kept": null,
+     "reversals_per_min": 0.0,
+     "zoom_p95": 0.47
+    }
+   }
+  },
+  "syn/dissolve": {
+   "analysis": {
+    "duration": 5.0,
+    "picture_iou": 1.0,
+    "recall_dissolve": 1.0,
+    "seconds": 1.7,
+    "transition_f1": 1.0,
+    "transition_found": 1,
+    "transition_truth": 1
+   },
+   "plans": {
+    "1:1": {
+     "caption_cut_rate": null,
+     "face_cut_rate": null,
+     "jerk_p95": 0.0,
+     "jumps": 0,
+     "person_kept": null,
+     "reversals_per_min": 0.0,
+     "zoom_p95": 0.84
+    },
+    "2:3": {
+     "caption_cut_rate": null,
+     "face_cut_rate": null,
+     "jerk_p95": 0.0,
+     "jumps": 0,
+     "person_kept": null,
+     "reversals_per_min": 0.0,
+     "zoom_p95": 0.56
+    },
+    "9:16": {
+     "caption_cut_rate": null,
+     "face_cut_rate": null,
+     "jerk_p95": 0.0,
+     "jumps": 0,
+     "person_kept": null,
+     "reversals_per_min": 0.0,
+     "zoom_p95": 0.47
+    }
+   }
+  },
+  "syn/fade": {
+   "analysis": {
+    "duration": 5.0,
+    "picture_iou": 1.0,
+    "recall_fade": 1.0,
+    "seconds": 1.7,
+    "transition_f1": 1.0,
+    "transition_found": 1,
+    "transition_truth": 1
+   },
+   "plans": {
+    "1:1": {
+     "caption_cut_rate": null,
+     "face_cut_rate": null,
+     "jerk_p95": 0.0,
+     "jumps": 0,
+     "person_kept": null,
+     "reversals_per_min": 0.0,
+     "zoom_p95": 0.84
+    },
+    "2:3": {
+     "caption_cut_rate": null,
+     "face_cut_rate": null,
+     "jerk_p95": 0.0,
+     "jumps": 0,
+     "person_kept": null,
+     "reversals_per_min": 0.0,
+     "zoom_p95": 0.56
+    },
+    "9:16": {
+     "caption_cut_rate": null,
+     "face_cut_rate": null,
+     "jerk_p95": 0.0,
+     "jumps": 0,
+     "person_kept": null,
+     "reversals_per_min": 0.0,
+     "zoom_p95": 0.47
+    }
+   }
+  },
+  "syn/pan": {
+   "analysis": {
+    "camera_error": 0.0,
+    "duration": 5.0,
+    "picture_iou": 1.0,
+    "seconds": 1.7,
+    "transition_f1": 1.0,
+    "transition_found": 0,
+    "transition_truth": 0
+   },
+   "plans": {
+    "1:1": {
+     "caption_cut_rate": null,
+     "face_cut_rate": null,
+     "jerk_p95": 0.0,
+     "jumps": 0,
+     "person_kept": null,
+     "reversals_per_min": 0.0,
+     "zoom_p95": 0.84
+    },
+    "2:3": {
+     "caption_cut_rate": null,
+     "face_cut_rate": null,
+     "jerk_p95": 0.0,
+     "jumps": 0,
+     "person_kept": null,
+     "reversals_per_min": 0.0,
+     "zoom_p95": 0.56
+    },
+    "9:16": {
+     "caption_cut_rate": null,
+     "face_cut_rate": null,
+     "jerk_p95": 0.0,
+     "jumps": 0,
+     "person_kept": null,
+     "reversals_per_min": 0.0,
+     "zoom_p95": 0.47
+    }
+   }
+  },
+  "syn/zoom": {
+   "analysis": {
+    "camera_error": 0.008,
+    "duration": 4.0,
+    "picture_iou": 1.0,
+    "seconds": 1.4,
+    "transition_f1": 1.0,
+    "transition_found": 0,
+    "transition_truth": 0
+   },
+   "plans": {
+    "1:1": {
+     "caption_cut_rate": null,
+     "face_cut_rate": null,
+     "jerk_p95": 0.0,
+     "jumps": 0,
+     "person_kept": null,
+     "reversals_per_min": 0.0,
+     "zoom_p95": 0.84
+    },
+    "2:3": {
+     "caption_cut_rate": null,
+     "face_cut_rate": null,
+     "jerk_p95": 0.0,
+     "jumps": 0,
+     "person_kept": null,
+     "reversals_per_min": 0.0,
+     "zoom_p95": 0.56
+    },
+    "9:16": {
+     "caption_cut_rate": null,
+     "face_cut_rate": null,
+     "jerk_p95": 0.0,
+     "jumps": 0,
+     "person_kept": null,
+     "reversals_per_min": 0.0,
+     "zoom_p95": 0.47
+    }
+   }
+  }
+ }
+}

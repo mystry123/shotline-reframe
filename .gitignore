@@ -8,3 +8,6 @@ testdata/*.m4a
 cache/
 .env.local
 .env
+eval/.cache/
+samples/
+testdata/clip008.transcript.json

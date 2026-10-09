@@ -31,8 +31,13 @@ jobs:
         run: pip install -r requirements.txt ruff==0.14.0
 
       - name: Lint
-        run: ruff check reframe tests
+        run: ruff check reframe tests eval
 
       # Clip-based tests skip here: the test videos aren't in git.
       - name: Tests
         run: pytest -q
+
+      # Synthetic clips (made with ffmpeg, exact answers) through the whole
+      # engine, compared with eval/baseline.json: fails when quality regresses.
+      - name: Evaluation (synthetic clips)
+        run: python -m eval.run --synthetic-only

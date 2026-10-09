@@ -26,6 +26,7 @@ TRANSITION_S = 0.5        # an eased change inside a shot takes this long (short
 # cut instead (Watch to Edit, arXiv 1807.03125, uses 0.75).
 PAN_LIMIT = 0.75
 AT_CUT_S = 0.05
+CUT_BELOW_IOU = 0.2       # framings overlapping this little (IoU) are different pictures: cut between them
 
 
 def _single_person(analysis, shot_index: int):
@@ -98,9 +99,18 @@ def unify(groups: list[list[int]], picked: list[list[Segment]], target_aspect: f
             s[0].info["setup"] = group[0]
 
 
+def _iou(a: dict, b: dict) -> float:
+    ix = max(0.0, min(a["x"] + a["w"], b["x"] + b["w"]) - max(a["x"], b["x"]))
+    iy = max(0.0, min(a["y"] + a["h"], b["y"] + b["h"]) - max(a["y"], b["y"]))
+    inter = ix * iy
+    union = a["w"] * a["h"] + b["w"] * b["h"] - inter
+    return inter / union if union > 0 else 0.0
+
+
 def transitions(segments: list[dict], cut_times: list[float]) -> None:
     """Mark how each segment starts (in place, on the output dicts):
-    "cut" at real cuts and for split screens, "ease" for changes inside a shot."""
+    "cut" at real cuts, for split screens, for long sideways moves and between
+    framings that barely overlap; "ease" for other changes inside a shot."""
     for prev, seg in zip(segments, segments[1:]):
         at_cut = any(abs(seg["start"] - c) <= AT_CUT_S for c in cut_times)
         if at_cut:
@@ -113,6 +123,9 @@ def transitions(segments: list[dict], cut_times: list[float]) -> None:
         sideways = abs((a["x"] + a["w"] / 2) - (b["x"] + b["w"] / 2)) / max(min(a["w"], b["w"]), 1e-6)
         if same_size and sideways > PAN_LIMIT:
             seg["transition"] = {"type": "cut"}                    # a long move: cut, don't whip-pan
+            continue
+        if _iou(a, b) <= CUT_BELOW_IOU:
+            seg["transition"] = {"type": "cut"}                    # a different picture altogether: cut, don't swoop
             continue
         duration = min(TRANSITION_S, 0.4 * (seg["end"] - seg["start"]), 0.4 * (prev["end"] - prev["start"]))
         seg["transition"] = {"type": "ease", "duration": round(max(duration, 0.1), 3)}

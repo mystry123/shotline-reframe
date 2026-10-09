@@ -1,0 +1,6 @@
+{
+ "note": "720p interview (host left, guest right in two-shots). Transcript: ElevenLabs words, speakers labelled by hand (speaker_1 = host: 54.7-57.6 interjections, 61.0-64.1). Cuts not hand-checked yet.",
+ "transitions": null,
+ "picture": {"x": 0, "y": 0, "w": 1280, "h": 720},
+ "speaker_x": {"speaker_0": [0.5, 1.0], "speaker_1": [0.0, 0.5]}
+}

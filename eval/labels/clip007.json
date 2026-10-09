@@ -1,0 +1,11 @@
+{
+ "status": "reviewed",
+ "note": "Crowd in fast motion with heavy blur and faces close to the camera; handheld, one take. Faces are hard to detect here.",
+ "picture": {
+  "x": 0,
+  "y": 0,
+  "w": 480,
+  "h": 854
+ },
+ "transitions": []
+}

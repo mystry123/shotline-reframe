@@ -1,0 +1,11 @@
+{
+ "status": "reviewed",
+ "note": "Motion graphics on one background; scenes change by soft blur dissolves, so transitions are not labelled.",
+ "picture": {
+  "x": 0,
+  "y": 0,
+  "w": 480,
+  "h": 848
+ },
+ "transitions": null
+}

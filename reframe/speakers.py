@@ -120,7 +120,9 @@ def group_people(tracks: dict[int, list[Track]]) -> dict[tuple[int, int], int]:
 
 
 def map_speakers(turns: list[Turn], shots: list[Shot], tracks: dict[int, list[Track]],
-                 person_of: dict[tuple[int, int], int]) -> People:
+                 person_of: dict[tuple[int, int], int], lip_votes: list[tuple[str, int, int, float]] = ()) -> People:
+    """`lip_votes`: (speaker, shot, track id, seconds) from mouth motion in
+    shots with several people (see lips.py); they count like single-person shots."""
     speakers = sorted({t.speaker for t in turns})
     persons = sorted(set(person_of.values()))
     out = People(person_of=person_of)
@@ -138,6 +140,10 @@ def map_speakers(turns: list[Turn], shots: list[Shot], tracks: dict[int, list[Tr
             overlap = min(turn.end, shot.end) - max(turn.start, shot.start)
             if overlap > 0:
                 votes[speakers.index(turn.speaker), persons.index(pid)] += overlap
+    for speaker, shot_index, track_id, seconds in lip_votes:
+        pid = person_of.get((shot_index, track_id))
+        if pid is not None and speaker in speakers:
+            votes[speakers.index(speaker), persons.index(pid)] += seconds
     rows, cols = linear_sum_assignment(-votes)
     for r, c in zip(rows, cols):
         total = votes[r].sum()

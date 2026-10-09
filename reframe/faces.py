@@ -28,6 +28,7 @@ class FaceDet:
     h: float
     score: float
     landmarks: np.ndarray  # (5, 2) normalized: right eye, left eye, nose, mouth right, mouth left
+    estimated: bool = False  # a head estimated from the body (the face itself wasn't found); see persons.py
 
     @property
     def cx(self) -> float:
