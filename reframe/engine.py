@@ -19,6 +19,7 @@ from .decode import decode
 from .bodies import BodyDetector
 from .faces import FaceDetector
 from .content import ContentBox, content_boxes
+from .continuity import setups, transitions, unify
 from .layout import Segment, plan_content, plan_shot, shot_alternatives
 from .probe import Rect, VideoInfo, find_picture_area, probe
 from .shots import Shot, detect_shots
@@ -28,7 +29,7 @@ from .speakers import People, Turn, active_person, describe_tracks, group_people
 from .text import TextBox, TextDetector
 from .tracks import Track, classify, mark_checked, track_shot
 
-ENGINE_VERSION = "2.1.0-dev"
+ENGINE_VERSION = "2.2.0-dev"
 
 
 @dataclass
@@ -176,7 +177,14 @@ def _caption_band(analysis: "Analysis") -> tuple[float, float, float, float] | N
     if cached != "unset":
         return cached
     every = max(1, int(round(analysis.fps)))
-    boxes = [b for i, frame in enumerate(analysis.text_in_picture) if i % every == 0 and len(frame) < 10
+    # Only shots showing a person: titles on slides and graphics sit elsewhere
+    # and would stretch the band over the person's face.
+    person_frames = set()
+    for shot in analysis.shots:
+        if any(t.is_person for t in analysis.tracks[shot.index]):
+            person_frames.update(range(int(shot.start * analysis.fps), int(shot.end * analysis.fps) + 1))
+    boxes = [b for i, frame in enumerate(analysis.text_in_picture)
+             if i % every == 0 and len(frame) < 10 and i in person_frames
              for b in frame if b.h >= CAPTION_MIN_H and (b.y0 + b.y1) / 2 >= 0.5
              and (b.x1 - b.x0) * analysis.area.w / analysis.area.h / b.h >= CAPTION_MIN_ASPECT]
     band = None
@@ -185,6 +193,11 @@ def _caption_band(analysis: "Analysis") -> tuple[float, float, float, float] | N
                 float(np.percentile([b.x1 for b in boxes], 95)), float(np.percentile([b.y1 for b in boxes], 95)))
     object.__setattr__(analysis, "_caption_band_cache", band)
     return band
+
+
+def _with_transitions(segments: list[dict], cut_times: list[float]) -> list[dict]:
+    transitions(segments, cut_times)
+    return segments
 
 
 def parse_ratio(ratio: str) -> float:
@@ -231,10 +244,27 @@ def _place_text(band: TextBand, info: VideoInfo, target: float) -> dict:
     }
 
 
-def shot_options(analysis: Analysis, ratio: str, options: Options | None = None) -> list[dict]:
-    """Per shot: {"shot": Shot, "options": {name: [Segment]}}, where "rules" is
-    the rule-based choice and the others are alternatives the AI director may
-    pick instead."""
+CAPTION_MODES = ("keep", "replace")
+
+
+def picture_captions(analysis: Analysis, shot: Shot):
+    """Burned-in captions in the lower part of this shot's picture (x0, y0, x1, y1), or None."""
+    _, captions = _shot_text(analysis, shot)
+    if captions and (captions[1] + captions[3]) / 2 >= 0.5:
+        return captions
+    return None
+
+
+def shot_options(analysis: Analysis, ratio: str, options: Options | None = None,
+                 captions_mode: str = "keep") -> list[dict]:
+    """Per shot: {"shot": Shot, "options": {name: [Segment]}, "captions": ...},
+    where "rules" is the rule-based choice and the others are alternatives the
+    AI director may pick instead.
+
+    captions_mode "replace": in shots with burned-in captions in the lower part
+    of the picture, every framing leaves them out entirely (Shotline adds new
+    captions there); "captions" is then "replaced", or "kept" where no framing
+    can leave them out (e.g. captions over the face)."""
     target = parse_ratio(ratio)
     area = analysis.area
     pic_aspect = area.w / area.h
@@ -253,37 +283,78 @@ def shot_options(analysis: Analysis, ratio: str, options: Options | None = None)
 
         screen, captions = _shot_text(analysis, s)
         has_people = any(t.is_person for t in shot_tracks) and not screen  # faces in thumbnails aren't subjects
+        strict = options.zoom != "tight"   # tight: the user's opt-in to close-ups leaving out part of the person
+        people_tracks = shot_tracks if has_people else []
+        band = picture_captions(analysis, s) if captions_mode == "replace" and has_people else None
+        if band is not None:
+            rules = plan_shot(s, shot_tracks, target, pic_aspect, analysis.fps, min_crop_h, speaking, None)
+            opts = shot_alternatives(s, people_tracks, rules, target, pic_aspect, analysis.fps, min_crop_h, None,
+                                     strict=strict, avoid=band)
+            if opts is not None:
+                out.append({"shot": s, "options": opts, "captions": "replaced"})
+                continue
         if not has_people and abs(target / pic_aspect - 1) >= 0.03:
             rules = plan_content(s, analysis.content, analysis.fps, target, pic_aspect)
         else:
             rules = plan_shot(s, shot_tracks, target, pic_aspect, analysis.fps, min_crop_h, speaking, captions)
-        people_tracks = shot_tracks if has_people else []
-        out.append({"shot": s, "options": shot_alternatives(s, people_tracks, rules, target, pic_aspect,
-                                                            analysis.fps, min_crop_h, captions)})
+        opts = shot_alternatives(s, people_tracks, rules, target, pic_aspect, analysis.fps, min_crop_h, captions,
+                                 strict=strict)
+        out.append({"shot": s, "options": opts,
+                    "captions": "kept" if picture_captions(analysis, s) is not None else None})
+    return out
+
+
+def _ranges(items: list[dict], state: str) -> list[list[float]]:
+    """Merged [start, end] times of the shots whose captions are `state`."""
+    out: list[list[float]] = []
+    for item in items:
+        if item.get("captions") != state:
+            continue
+        s = item["shot"]
+        if out and abs(out[-1][1] - s.start) < 1e-3:
+            out[-1][1] = round(s.end, 3)
+        else:
+            out.append([round(s.start, 3), round(s.end, 3)])
     return out
 
 
 def plan(analysis: Analysis, ratio: str, keep_text: list[str] | None = None,
          options: Options | None = None, choices: dict[int, str] | None = None,
-         director: dict | None = None) -> dict:
+         director: dict | None = None, captions_mode: str = "keep") -> dict:
     """`keep_text`: ids of detected burned-in text (from result["text"]) the
     user chose to keep; everything else outside the picture is dropped.
     `choices`: shot index → option name (from the AI director); shots not
-    listed use the rules. `director`: summary of how choices were made."""
+    listed use the rules. `director`: summary of how choices were made.
+    `captions_mode`: "keep" or "replace" burned-in captions inside the picture
+    (see shot_options)."""
     target = parse_ratio(ratio)
     area = analysis.area
     options = options or Options(quality=analysis.quality)
     min_crop_h = options.min_crop_height(area.h)
-    segments = []
+    items = shot_options(analysis, ratio, options, captions_mode)
+    groups = setups(analysis, items)
+    setup_of = {pos: g for g in groups for pos in g}
+    picked_segs: list[list[Segment]] = []
     picked = []
-    for item in shot_options(analysis, ratio, options):
+    for pos, item in enumerate(items):
         s, opts = item["shot"], item["options"]
-        name = (choices or {}).get(s.index, "rules")
+        # The director picks per setup (on one shot of it): apply that pick to every shot of the setup.
+        chosen = [(p, (choices or {}).get(items[p]["shot"].index)) for p in setup_of[pos]]
+        rep, name = next(((p, n) for p, n in chosen if n), (pos, "rules"))
         if name not in opts:
-            name = "rules"
-        segments.extend(opts[name])
+            # This shot lacks that option (near-duplicates are merged per shot):
+            # take its option of the same layout and closest size.
+            want = items[rep]["options"].get(name, [None])[0]
+            same = [(n, segs) for n, segs in opts.items()
+                    if want is not None and segs[0].layout == want.layout and len(segs) == 1]
+            name = min(same, key=lambda ns: abs(ns[1][0].info.get("crop_h", 1) - want.info.get("crop_h", 1)))[0] \
+                if same else "rules"
+        picked_segs.append(opts[name])
         picked.append({"shot": s.index, "start": round(s.start, 3), "end": round(s.end, 3), "choice": name,
-                       "options": list(opts)})
+                       "options": list(opts), "setup": items[setup_of[pos][0]]["shot"].index})
+    # One framing per setup: no resizing at the jump cuts of a talking head.
+    unify(groups, picked_segs, target, area.w / area.h)
+    segments = [seg for segs in picked_segs for seg in segs]
     return {
         "engine": ENGINE_VERSION,
         "source": {"width": analysis.info.width, "height": analysis.info.height, "duration": analysis.info.duration,
@@ -294,8 +365,14 @@ def plan(analysis: Analysis, ratio: str, keep_text: list[str] | None = None,
                    "Choose tighter framing to zoom in anyway."] if min_crop_h >= 1.0 else []),
         "speakers": {spk: {"person": pid, "confidence": round(analysis.people.confidence.get(spk, 0), 2)}
                      for spk, pid in analysis.people.speaker_person.items()},
-        "segments": [_to_frame(s, analysis.info, area) for s in segments],
+        "segments": _with_transitions([_to_frame(s, analysis.info, area) for s in segments],
+                                      [s.start for s in analysis.shots[1:]]),
         "shots": picked,
+        # Burned-in captions inside the picture: whether there are any, and with
+        # "replace", where they were left out (the backend adds Shotline captions
+        # for exactly those times) and where they had to stay.
+        "pictureCaptions": any(picture_captions(analysis, s) is not None for s in analysis.shots),
+        "captions": {"mode": captions_mode, "replaced": _ranges(items, "replaced"), "kept": _ranges(items, "kept")},
         "director": director or {"used": False},
         # Burned-in text found outside the picture: the editor asks whether to
         # keep it (default: drop; suggest Shotline captions when not keyable).

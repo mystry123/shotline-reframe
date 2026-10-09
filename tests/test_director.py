@@ -29,8 +29,9 @@ def options(analysis):
 
 def _reply(monkeypatch, text=None, error=None):
     seen = {}
+    monkeypatch.setattr(director, "SHOTS_PER_SHEET", 100)   # one request: deterministic
 
-    def fake(sheets, shot_list):
+    def fake(sheets, shot_list, deadline=None):
         seen["sheets"], seen["list"] = sheets, shot_list
         if error:
             raise error
@@ -56,7 +57,10 @@ def test_a_confident_pick_changes_that_shot_only(analysis, options, monkeypatch)
     rules = plan(analysis, "2:3")
     directed = plan(analysis, "2:3", choices=summary["choices"], director=summary)
     changed = [s for s in directed["shots"] if s["choice"] != "rules"]
-    assert [s["shot"] for s in changed] == [shot["shot"].index]
+    setup = next(s["setup"] for s in directed["shots"] if s["shot"] == shot["shot"].index)
+    # The pick applies to the whole setup (same person and camera position), and only to it.
+    assert {s["shot"] for s in changed} == {s["shot"] for s in directed["shots"] if s["setup"] == setup}
+    assert shot["shot"].index in {s["shot"] for s in changed}
     assert directed["director"]["used"] and rules["director"] == {"used": False}
 
 
@@ -120,6 +124,7 @@ def _gemini(monkeypatch, outcomes):
     monkeypatch.setenv("DIRECTOR_MODEL", "gemini-3.8-flash")
     monkeypatch.setattr(director, "_gemini_client", lambda: type("C", (), {"models": models})())
     monkeypatch.setattr(director.time, "sleep", lambda s: None)
+    monkeypatch.setattr(director, "SHOTS_PER_SHEET", 100)   # one request: deterministic
     return models
 
 
@@ -164,3 +169,29 @@ def test_gemini_timeout_keeps_the_rules(analysis, options, monkeypatch):
     _gemini(monkeypatch, [httpx.ReadTimeout("timed out")])
     summary = director.direct(analysis, options, parse_ratio("2:3"))
     assert not summary["used"] and "ReadTimeout" in summary["error"]
+
+
+def test_a_failed_sheet_keeps_the_rules_for_its_shots_only(analysis, options, monkeypatch):
+    """Sheets are separate requests: one failing doesn't lose the others' picks."""
+    multi = [o["shot"].index + 1 for o in options if len(o["options"]) > 1]
+    monkeypatch.setattr(director, "SHOTS_PER_SHEET", 2)
+
+    def fake(sheets, shot_list, deadline=None):
+        first = int(shot_list.split(":")[0].split()[-1])
+        if first == multi[0]:
+            raise RuntimeError("Gemini HTTP 504")
+        return json.dumps({"shots": [{"shot": n, "choice": "B", "confidence": 0.9, "reason": "x"}
+                                     for n in multi[2:]]})
+
+    monkeypatch.setattr(director, "_ask", fake)
+    summary = director.direct(analysis, options, parse_ratio("2:3"))
+    assert summary["used"] and "504" in summary["error"]
+    assert not {multi[0] - 1, multi[1] - 1} & set(summary["choices"])       # first sheet: rules
+    assert summary["choices"]                                               # the others: picked
+
+
+def test_retries_stop_at_the_budget(analysis, options, monkeypatch):
+    models = _gemini(monkeypatch, [_api_error(503)] * 10)
+    monkeypatch.setenv("DIRECTOR_BUDGET_S", "6")      # backoff (>=1.1 s) + 5 s margin won't fit
+    summary = director.direct(analysis, options, parse_ratio("2:3"))
+    assert not summary["used"] and len(models.calls) == 1

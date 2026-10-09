@@ -2,7 +2,7 @@
 
     POST /analyses             {videoUrl, words?, quality?}  → 202 {id, status}
     GET  /analyses/{id}        → {id, status, stage, stageLabel, progress, error?, text?}
-    POST /analyses/{id}/plan   {ratio, zoom?, keepText?, outputHeight?} → plan (segments …)
+    POST /analyses/{id}/plan   {ratio, zoom?, keepText?, outputHeight?, captions?} → plan (segments …)
     GET  /health
 
 Analyses run in the background (no request waits for one). The id is derived
@@ -44,7 +44,8 @@ from fastapi import FastAPI, Header, HTTPException
 from pydantic import BaseModel, Field
 
 from . import director
-from .engine import ENGINE_VERSION, Analysis, analyze, parse_ratio, plan, shot_options
+from .continuity import setups
+from .engine import CAPTION_MODES, ENGINE_VERSION, Analysis, analyze, parse_ratio, picture_captions, plan, shot_options
 from .options import OUTPUT_HEIGHTS, QUALITY, ZOOM, Options
 
 TOKEN = os.environ.get("REFRAME_SERVICE_TOKEN", "")
@@ -82,6 +83,7 @@ class PlanRequest(BaseModel):
     keepText: list[str] = Field(default_factory=list)
     outputHeight: int = 1080
     director: bool = True       # let the AI director pick framings (when configured)
+    captions: str = "keep"      # burned-in captions inside the picture: "keep" or "replace"
 
 
 def _auth(token: str | None) -> None:
@@ -177,10 +179,10 @@ def _load(analysis_id: str) -> Analysis | None:
     return result
 
 
-def _directed(analysis_id: str, result: Analysis, ratio: str, options: Options) -> dict:
+def _directed(analysis_id: str, result: Analysis, ratio: str, options: Options, captions: str = "keep") -> dict:
     """The AI director's picks for this analysis and shape, cached on disk
     (only successful runs are cached; failures are retried next time)."""
-    key = hashlib.sha256(f"{analysis_id}|{ratio}|{options.zoom}|{options.output_height}|"
+    key = hashlib.sha256(f"{analysis_id}|{ratio}|{options.zoom}|{options.output_height}|setups|{captions}|"
                          f"{director.model_id()}|{director.PROMPT_VERSION}".encode()).hexdigest()[:32]
     path = CACHE_DIR / "director" / f"{key}.json"
     if path.exists():
@@ -188,7 +190,8 @@ def _directed(analysis_id: str, result: Analysis, ratio: str, options: Options) 
         summary["choices"] = {int(k): v for k, v in summary["choices"].items()}
         summary["cached"] = True
         return summary
-    summary = director.direct(result, shot_options(result, ratio, options), parse_ratio(ratio))
+    items = shot_options(result, ratio, options, captions)
+    summary = director.direct(result, items, parse_ratio(ratio), options.output_height, groups=setups(result, items))
     if summary.get("used"):
         path.parent.mkdir(exist_ok=True)
         path.write_text(json.dumps(summary))
@@ -252,6 +255,8 @@ def get_analysis(analysis_id: str, x_internal_token: str | None = Header(default
             job["text"] = [{"id": t.id, "kind": t.kind, "region": t.region, "description": t.describe(),
                             "onScreen": t.active, "canKeep": t.keyable} for t in result.text]
             job["duration"] = result.info.duration
+            # Burned-in captions inside the picture (the editor offers Keep / Replace).
+            job["pictureCaptions"] = any(picture_captions(result, s) is not None for s in result.shots)
     return job
 
 
@@ -260,6 +265,8 @@ def plan_analysis(analysis_id: str, req: PlanRequest, x_internal_token: str | No
     _auth(x_internal_token)
     if req.zoom not in ZOOM:
         raise HTTPException(400, f"zoom must be one of {sorted(ZOOM)}")
+    if req.captions not in CAPTION_MODES:
+        raise HTTPException(400, f"captions must be one of {list(CAPTION_MODES)}")
     if req.outputHeight not in OUTPUT_HEIGHTS:
         raise HTTPException(400, f"outputHeight must be one of {list(OUTPUT_HEIGHTS)}")
     try:
@@ -272,7 +279,9 @@ def plan_analysis(analysis_id: str, req: PlanRequest, x_internal_token: str | No
     if result is None:
         raise HTTPException(409, "The analysis isn't finished (or has expired)")
     options = Options(quality=result.quality, output_height=req.outputHeight, zoom=req.zoom)
-    summary = _directed(analysis_id, result, req.ratio, options) if req.director and director.configured() else None
+    summary = (_directed(analysis_id, result, req.ratio, options, req.captions)
+               if req.director and director.configured() else None)
     return plan(result, req.ratio, keep_text=req.keepText, options=options,
                 choices=summary["choices"] if summary else None,
-                director={k: v for k, v in summary.items() if k != "choices"} if summary else None)
+                director={k: v for k, v in summary.items() if k != "choices"} if summary else None,
+                captions_mode=req.captions)
