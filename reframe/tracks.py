@@ -59,6 +59,22 @@ class Track:
     def median(self, attr: str) -> float:
         return float(np.median([getattr(d, attr) for d in self.dets]))
 
+    @property
+    def moving(self) -> bool:
+        """The person moves across the picture during the shot (walks, leans
+        far), so boxes taken at their median position don't hold all through."""
+        cx = [d.cx for d in self.dets]
+        return len(cx) >= 4 and float(np.percentile(cx, 90) - np.percentile(cx, 10)) > max(MOVING_MIN, self.median("w"))
+
+    def shift_at(self, t: float) -> tuple[float, float]:
+        """Where the person is at time t relative to their median position
+        (dx, dy; median over ±0.5 s). (0, 0) for someone who stays put."""
+        if not self.moving:
+            return 0.0, 0.0
+        near = [d for d in self.dets if abs(d.time - t) <= 0.5] or [min(self.dets, key=lambda d: abs(d.time - t))]
+        return (float(np.median([d.cx for d in near])) - self.median("cx"),
+                float(np.median([d.cy for d in near])) - self.median("cy"))
+
     def body_extent(self) -> tuple[float, float, float, float]:
         """Where the person is over the shot (x0, y0, x1, y1): the measured
         body boxes (10th/90th percentiles, so a stray box doesn't stretch it)
@@ -187,6 +203,8 @@ def track_shot(shot: Shot, faces_per_frame: list[list[FaceDet]], fps: float) -> 
         t.presence = len(t.dets) / frames_in_shot
     return out
 
+
+MOVING_MIN = 0.08           # a person whose face spans more than this (share of the picture width), and a face width, is moving
 
 # Thresholds from test clip 001 (all three analysis qualities); see tests/.
 MIN_PRESENCE = 0.25

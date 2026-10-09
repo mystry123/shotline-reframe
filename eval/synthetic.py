@@ -98,6 +98,14 @@ LOCAL: dict[str, dict] = {
                    "[a][b]xfade=transition=fadeblack:duration=0.8:offset=3,format=yuv420p[v]"),
         "truth": {"transitions": [{"type": "fade", "start": 3.0, "end": 3.8}], "picture": {"x": 0, "y": 0, "w": 480, "h": 854}},
     },
+    "real_moving_subject": {   # a person who stands, walks right, stands, walks back (16:9)
+        "needs": ["clip006"],
+        "args": ["-t", "12", "-i", "{clip006}"],
+        "filter": ("[0:v]split[f][b];[b]scale=1280:720,boxblur=20,eq=brightness=-0.1[bg];[f]scale=-2:720[fg];"
+                   "[bg][fg]overlay=x='if(lt(t,3),100,if(lt(t,6),100+(t-3)*200,if(lt(t,8),700,700-(t-8)*150)))':y=0,"
+                   "format=yuv420p[v]"),
+        "truth": {"transitions": [], "picture": {"x": 0, "y": 0, "w": 1280, "h": 720}},
+    },
     "real_blurred_bars": {
         "needs": ["clip003"],
         "args": ["-t", "20", "-i", "{clip003}"],

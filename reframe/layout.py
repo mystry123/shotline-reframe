@@ -28,6 +28,7 @@ from dataclasses import dataclass, field
 
 import numpy as np
 
+from .paths import l1_path
 from .shots import Shot
 from .tracks import Track
 
@@ -37,7 +38,6 @@ FACE_FRACTION_SPLIT = 0.40    # face height / zone height in a split
 EYE_LINE = 1 / 3              # eyes a third from the top of the crop
 LOOK_ROOM = 0.08              # shift towards where the face looks, share of crop width
 # Camera
-STATIONARY_SLACK = 0.6        # hold still if the subject's range fits in 60% of the free space
 DEAD_ZONE = 0.15              # subject may wander ±15% of crop width before the camera moves
 SMOOTH_SIGMA_S = 0.6
 MAX_SPEED = 0.25              # picture widths per second
@@ -131,8 +131,32 @@ def _rdp(points: list[Keyframe], tol: float) -> list[Keyframe]:
     return _rdp(points[: idx + 1], tol)[:-1] + _rdp(points[idx:], tol)
 
 
-def _follow(shot: Shot, tracks: list[Track], crop_w: float, crop_h: float, fps: float) -> list[Keyframe]:
-    """Keyframes for a crop following one or more tracks (their combined centre)."""
+def _l1_follow(times: np.ndarray, cx: np.ndarray, crop_w: float, fps: float,
+               x_bounds: list[tuple[float, float]], soft: list[tuple[float, float]] | None = None) -> np.ndarray | None:
+    """Crop left edge per sample: the subject kept within the dead zone of the
+    crop's centre, as holds, steady pans and eases (see paths.py). `x_bounds`
+    are hard; `soft` (the comfortable margin) narrows the corridor where it can."""
+    k = max(1, int(round(0.25 * fps)))           # median over ±0.25 s: detector noise out
+    filtered = np.array([np.median(cx[max(0, i - k):i + k + 1]) for i in range(len(cx))])
+    target = filtered - crop_w / 2
+    half = DEAD_ZONE * crop_w
+    lo, hi = target - half, target + half
+    if soft is not None:
+        s_lo = np.array([b[0] for b in soft])
+        s_hi = np.array([b[1] for b in soft])
+        ok = s_lo <= s_hi
+        lo = np.where(ok, np.maximum(lo, s_lo), lo)
+        hi = np.where(ok, np.minimum(hi, s_hi), hi)
+        bad = lo > hi
+        lo[bad] = hi[bad] = ((s_lo + s_hi) / 2)[bad]
+    return l1_path(lo, hi, x_bounds, fps, MAX_SPEED, target=np.clip(target, lo, hi))
+
+
+def _follow(shot: Shot, tracks: list[Track], crop_w: float, crop_h: float, fps: float,
+            x_bounds=None, soft_bounds=None) -> list[Keyframe]:
+    """Keyframes for a crop following one or more tracks (their combined centre).
+    `x_bounds(t) -> (lo, hi)`: where the crop's left edge must stay at time t
+    (default: anywhere in the picture); `soft_bounds(t)`: where it should."""
     times = np.arange(shot.start, shot.end, 1 / fps)
     cx, eye = [], []
     for t in times:
@@ -144,14 +168,26 @@ def _follow(shot: Shot, tracks: list[Track], crop_w: float, crop_h: float, fps: 
         eye.append(np.mean([p[1] for p in pts]))
     cx, eye = np.array(cx), np.array(eye)
     free = 1.0 - crop_w
-    stationary = (cx.max() - cx.min()) <= STATIONARY_SLACK * max(free, 1e-6) or free <= 1e-6
+    # Hold still when the subject's whole range fits in the crop's dead zone
+    # (the L1 path would hold too; this just skips the solver).
+    stationary = (cx.max() - cx.min()) <= 2 * DEAD_ZONE * crop_w or free <= 1e-6
     if stationary:
         x = float(np.clip(np.median(cx) - crop_w / 2, 0, free))
         y = float(np.clip(np.median(eye) - EYE_LINE * crop_h, 0, 1 - crop_h))
         return [Keyframe(shot.start, x, y, crop_w, crop_h), Keyframe(shot.end, x, y, crop_w, crop_h)]
-    centre = _smooth_path(times, cx, crop_w, fps)
+    bounds = []
+    for t in times:
+        lo, hi = x_bounds(float(t)) if x_bounds is not None else (0.0, free)
+        lo, hi = max(0.0, lo), min(free, hi)
+        if hi < lo:                              # can't keep it all: centre on it
+            lo = hi = float(np.clip((lo + hi) / 2, 0, free))
+        bounds.append((lo, hi))
+    soft = [soft_bounds(float(t)) for t in times] if soft_bounds is not None else None
+    xs = _l1_follow(times, cx, crop_w, fps, bounds, soft)
+    if xs is None:                               # solver failed: the old smoother
+        xs = np.clip(_smooth_path(times, cx, crop_w, fps) - crop_w / 2, [b[0] for b in bounds], [b[1] for b in bounds])
     y = float(np.clip(np.median(eye) - EYE_LINE * crop_h, 0, 1 - crop_h))
-    kfs = [Keyframe(float(t), float(np.clip(c - crop_w / 2, 0, free)), y, crop_w, crop_h) for t, c in zip(times, centre)]
+    kfs = [Keyframe(float(t), float(x), y, crop_w, crop_h) for t, x in zip(times, xs)]
     kfs.append(Keyframe(shot.end, kfs[-1].x, y, crop_w, crop_h))
     return _rdp(kfs, 0.003)
 
@@ -226,9 +262,11 @@ PREFERRED = (1.3, 0.6, 3.0)   # each side, above, below
 CORE = (0.8, 0.4, 2.0)
 
 
-def _must_keep(person: Track, captions, spread=PREFERRED) -> tuple[float, float, float, float]:
-    """The area around the person (plus burned-in captions) that must stay in frame."""
-    cx, y, w, h = person.median("cx"), person.median("y"), person.median("w"), person.median("h")
+def _must_keep(person: Track, captions, spread=PREFERRED, t: float | None = None) -> tuple[float, float, float, float]:
+    """The area around the person (plus burned-in captions) that must stay in
+    frame; at time t for a person who moves (the median position otherwise)."""
+    dx, dy = person.shift_at(t) if t is not None else (0.0, 0.0)
+    cx, y, w, h = person.median("cx") + dx, person.median("y") + dy, person.median("w"), person.median("h")
     side, above, below = spread
     x0, x1 = cx - side * w, cx + side * w
     y0, y1 = y - above * h, y + below * h
@@ -238,11 +276,38 @@ def _must_keep(person: Track, captions, spread=PREFERRED) -> tuple[float, float,
     return max(0.0, x0 - KEEP_MARGIN), max(0.0, y0 - KEEP_MARGIN), min(1.0, x1 + KEEP_MARGIN), min(1.0, y1 + KEEP_MARGIN)
 
 
+def _keep_bounds(p: Track, captions, spread, w: float):
+    """Where a crop of width w may put its left edge at time t, keeping the
+    must-keep area (spread=None: just the face and captions, the hard limit)."""
+    def bounds(t: float) -> tuple[float, float]:
+        kx0, _, kx1, _ = _inner(p, captions, t) if spread is None else _must_keep(p, captions, spread, t)
+        return max(0.0, kx1 - w), min(kx0, 1 - w)
+    return bounds
+
+
+def _follow_keeping(shot: Shot, p: Track, captions, spread, w: float, h: float, fps: float) -> list[Keyframe]:
+    """Follow p: the face and captions always in the crop, the comfortable
+    margin (`spread`) wherever the path allows. A still person: the margin is
+    a hard limit too (nothing to trade it for)."""
+    if p.moving:
+        kfs = _follow(shot, [p], w, h, fps, _keep_bounds(p, captions, None, w), _keep_bounds(p, captions, spread, w))
+    else:
+        kfs = _follow(shot, [p], w, h, fps, _keep_bounds(p, captions, spread, w))
+        for k in kfs:
+            kx0, _, kx1, _ = _must_keep(p, captions, spread, k.t)
+            k.x = float(np.clip(k.x, max(0.0, kx1 - w), min(kx0, 1 - w)))
+    for k in kfs:
+        _, ky0, _, ky1 = _must_keep(p, captions, spread, k.t)
+        k.y = float(np.clip(k.y, max(0.0, ky1 - h), min(ky0, 1 - h)))
+    return kfs
+
+
 def _single_person(shot: Shot, p: Track, target_aspect: float, pic_aspect: float, fps: float,
                    min_crop_h: float, captions) -> Segment:
     kx0, ky0, kx1, ky1 = _must_keep(p, captions)
     max_w, max_h = _crop_for_target(target_aspect, pic_aspect)
     keep_w, keep_h = kx1 - kx0, ky1 - ky0
+    spread = PREFERRED
     if keep_w > max_w or keep_h > max_h:
         # The preferred area doesn't fit; a crop is still fine if the core does
         # (a little less shoulder beats shrinking the person over a blur).
@@ -250,6 +315,7 @@ def _single_person(shot: Shot, p: Track, target_aspect: float, pic_aspect: float
         if cx1 - cx0 <= max_w and cy1 - cy0 <= max_h:
             kx0, ky0, kx1, ky1 = cx0, cy0, cx1, cy1
             keep_w, keep_h = kx1 - kx0, ky1 - ky0
+            spread = CORE
 
     w, h = _crop_size(target_aspect, pic_aspect, p.median("h"), FACE_FRACTION_SINGLE, min_crop_h)
     if w < keep_w or h < keep_h:
@@ -258,10 +324,7 @@ def _single_person(shot: Shot, p: Track, target_aspect: float, pic_aspect: float
     if keep_w <= max_w and keep_h <= max_h and h >= min_crop_h - ZOOM_TOLERANCE:
         # Fits in a crop of the target shape within the zoom limit: follow the
         # person, never cutting the must-keep area.
-        kfs = _follow(shot, [p], w, h, fps)
-        for k in kfs:
-            k.x = float(np.clip(k.x, max(0.0, kx1 - w), min(kx0, 1 - w)))
-            k.y = float(np.clip(k.y, max(0.0, ky1 - h), min(ky0, 1 - h)))
+        kfs = _follow_keeping(shot, p, captions, spread, w, h, fps)
         reason = "one person" + (" and their captions" if captions else "")
         return Segment(shot.start, shot.end, "single", [Zone((0, 0, 1, 1), kfs, f"track {p.track_id}")], reason)
 
@@ -322,31 +385,46 @@ NEAR_FULL_CANVAS = 0.8   # a framed view covering more of the output than this (
 UPPER_BODY_FACES = 4.5  # the "upper body" ends this many face heights below the top of the face (about the waist)
 
 
-def _inner(person: Track, captions):
+def _inner(person: Track, captions, t: float | None = None):
     """What a crop must keep: the face (forehead to chin and a little neck; a
     tight close-up may trim the hair) and the captions whole when there are any."""
-    x, y, w, h = person.median("x"), person.median("y"), person.median("w"), person.median("h")
+    dx, dy = person.shift_at(t) if t is not None else (0.0, 0.0)
+    x, y, w, h = person.median("x") + dx, person.median("y") + dy, person.median("w"), person.median("h")
     box = (x - 0.1 * w, y - 0.05 * h, x + 1.1 * w, y + 1.3 * h)
     if captions:
         box = (min(box[0], captions[0]), min(box[1], captions[1]), max(box[2], captions[2]), max(box[3], captions[3]))
     return box
 
 
+def _at(box, t: float):
+    """A box, or a function of time giving one (for a person who moves)."""
+    return box(t) if callable(box) else box
+
+
 def _keeps(seg: Segment, box) -> bool:
     """Every keyframe of every zone contains `box` (within KEEP_TOLERANCE)."""
-    x0, y0, x1, y1 = box
     for z in seg.zones:
         for k in z.keyframes:
+            x0, y0, x1, y1 = _at(box, k.t)
             if (k.x > x0 + KEEP_TOLERANCE or k.y > y0 + KEEP_TOLERANCE
                     or k.x + k.w < x1 - KEEP_TOLERANCE or k.y + k.h < y1 - KEEP_TOLERANCE):
                 return False
     return True
 
 
-def upper_body(person: Track) -> tuple[float, float, float, float]:
+def upper_body(person: Track, t: float | None = None) -> tuple[float, float, float, float]:
     """The part of the person a framing must not cut away: measured body
     (arms and hands included), down to UPPER_BODY_FACES face heights below
-    the face (legs and floor don't count)."""
+    the face (legs and floor don't count). For a person who moves, at time t:
+    the body estimated around the face then (their whole-shot extent spans
+    the walk, not the person)."""
+    if t is not None and person.moving:
+        dx, dy = person.shift_at(t)
+        fx, fy, fw, fh = person.median("x") + dx, person.median("y") + dy, person.median("w"), person.median("h")
+        boxes = np.array(getattr(person, "body_boxes", []) or [], dtype=float)
+        half = float(np.median(boxes[:, 2] - boxes[:, 0])) / 2 if len(boxes) else 1.6 * fw
+        cx = fx + fw / 2
+        return (max(0.0, cx - half), max(0.0, fy - 0.3 * fh), min(1.0, cx + half), min(1.0, fy + UPPER_BODY_FACES * fh))
     x0, y0, x1, y1 = person.body_extent()
     limit = person.median("y") + UPPER_BODY_FACES * person.median("h")
     return x0, y0, x1, min(y1, max(limit, person.median("y") + person.median("h")))
@@ -355,11 +433,11 @@ def upper_body(person: Track) -> tuple[float, float, float, float]:
 def share_kept(seg: Segment, box, axes: str = "y") -> float:
     """Smallest share (over keyframes) of `box` the segment's crops keep,
     along `axes` ("y" height, "x" width, "xy" both)."""
-    x0, y0, x1, y1 = box
-    bw, bh = max(x1 - x0, 1e-6), max(y1 - y0, 1e-6)
     worst = 1.0
     for z in seg.zones:
         for k in z.keyframes:
+            x0, y0, x1, y1 = _at(box, k.t)
+            bw, bh = max(x1 - x0, 1e-6), max(y1 - y0, 1e-6)
             if "x" in axes:
                 worst = min(worst, max(0.0, min(x1, k.x + k.w) - max(x0, k.x)) / bw)
             if "y" in axes:
@@ -417,12 +495,14 @@ def shot_alternatives(shot: Shot, tracks: list[Track], rules: list[Segment], tar
     people = [t for t in tracks if t.is_person]
     person = people[0] if len(people) == 1 else None
 
-    checked_body = upper_body(person) if person is not None else None
-    if checked_body is not None and avoid is not None:
-        # Replacing captions leaves the strip behind them out on purpose: the
-        # person check counts only what is above it.
-        b = checked_body
-        checked_body = (b[0], b[1], b[2], max(b[1] + 0.05, min(b[3], avoid[1] - KEEP_MARGIN)))
+    def body_at(t: float):
+        b = upper_body(person, t)
+        if avoid is not None:
+            # Replacing captions leaves the strip behind them out on purpose: the
+            # person check counts only what is above it.
+            b = (b[0], b[1], b[2], max(b[1] + 0.05, min(b[3], avoid[1] - KEEP_MARGIN)))
+        return b
+    checked_body = body_at if person is not None else None
 
     def measure(segs: list[Segment]) -> None:
         for seg in segs:
@@ -445,7 +525,7 @@ def shot_alternatives(shot: Shot, tracks: list[Track], rules: list[Segment], tar
                 if ch < 0.98 and cw * ch > NEAR_FULL_CANVAS:
                     return
         if person is not None:
-            if not all(_keeps(seg, _inner(person, captions)) for seg in segs):
+            if not all(_keeps(seg, lambda t: _inner(person, captions, t)) for seg in segs):
                 return                                   # cuts the face or captions
             if any(seg.info["crop_h"] < min_crop_h - ZOOM_TOLERANCE for seg in segs):
                 return                                   # zooms in further than allowed
@@ -471,12 +551,9 @@ def shot_alternatives(shot: Shot, tracks: list[Track], rules: list[Segment], tar
         add("close", [Segment(shot.start, shot.end, "single", [Zone((0, 0, 1, 1), _follow(shot, [p], w, h, fps), tag)],
                               "close-up on the person")])
         # Medium: the biggest crop of the target shape, on the person, keeping captions when they fit.
-        kfs = _follow(shot, [p], max_w, max_h, fps)
         kx0, ky0, kx1, ky1 = _must_keep(p, captions, CORE)
-        if kx1 - kx0 <= max_w and ky1 - ky0 <= max_h:
-            for k in kfs:
-                k.x = float(np.clip(k.x, max(0.0, kx1 - max_w), min(kx0, 1 - max_w)))
-                k.y = float(np.clip(k.y, max(0.0, ky1 - max_h), min(ky0, 1 - max_h)))
+        fits = kx1 - kx0 <= max_w and ky1 - ky0 <= max_h
+        kfs = _follow_keeping(shot, p, captions, CORE, max_w, max_h, fps) if fits else _follow(shot, [p], max_w, max_h, fps)
         add("medium", [Segment(shot.start, shot.end, "single", [Zone((0, 0, 1, 1), kfs, tag)], "as close as the shape allows")])
         # Framed over a blurred background, from tightest to widest: head and
         # shoulders, head to chest, the whole upper body (hands and what they hold).
@@ -501,7 +578,9 @@ def shot_alternatives(shot: Shot, tracks: list[Track], rules: list[Segment], tar
     # person or zooms too far, the closest framing that passes takes its place.
     def passes(segs: list[Segment]) -> bool:
         return all(seg.info["crop_h"] >= min_crop_h - ZOOM_TOLERANCE
-                   and (person is None or not strict or seg.info["person_kept"] >= SUBJECT_KEEP) for seg in segs)
+                   and (person is None or not strict or seg.info["person_kept"] >= SUBJECT_KEEP)
+                   and (person is None or seg.layout not in ("single", "framed")
+                        or _keeps(seg, lambda t: _inner(person, captions, t))) for seg in segs)
     if (person is not None or not rules_ok) and len(out) > 1 and (not rules_ok or not passes(out["rules"])):
         for name in ("upper", "whole", "whole-wide", "body", "medium", "close", "wide"):
             if name in out and passes(out[name]):

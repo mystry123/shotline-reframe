@@ -5,7 +5,7 @@ model, eased transitions included), sampled at SAMPLE_FPS. Coordinates are
 shares of the full source frame.
 
 People and captions (no labels needed; from the engine's own detections):
-    face_cut_rate      share of samples in single-person shots whose face box isn't fully in the crop
+    face_cut_rate      share of samples in single-person shots whose face box (where it is then) isn't fully in the crop
     caption_cut_rate   share of samples in shots with burned-in captions where the crop slices the caption band
     person_kept        mean share of the person's upper body (height) kept, single-person shots
 Motion (no labels):
@@ -129,9 +129,11 @@ def plan_metrics(analysis, plan: dict) -> dict:
         if len(people) == 1:
             p = people[0]
             fx, fy, fw, fh = p.median("x"), p.median("y"), p.median("w"), p.median("h")
-            face = _to_frame((fx, fy, fx + fw, fy + fh), area, W, H)
-            body = _to_frame(upper_body(p), area, W, H)
-            for _, _, crop in samples:
+            for t, _, crop in samples:
+                # Where the person is at this moment (a person who walks isn't at their median).
+                dx, dy = p.shift_at(t)
+                face = _to_frame((fx + dx, fy + dy, fx + dx + fw, fy + dy + fh), area, W, H)
+                body = _to_frame(upper_body(p, t), area, W, H)
                 face_n += 1
                 face_cut += not _inside(face, crop)
                 x, y, w, h = crop

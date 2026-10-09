@@ -17,6 +17,7 @@ from dataclasses import dataclass, asdict, field
 
 from .decode import decode
 from .bodies import BodyDetector
+from .persons import join_bodies
 from .faces import FaceDetector
 from .content import ContentBox, content_boxes
 from .continuity import setups, transitions, unify
@@ -31,6 +32,7 @@ from .text import TextBox, TextDetector
 from .tracks import Track, classify, mark_checked, track_shot
 
 ENGINE_VERSION = "2.2.0-dev"
+BODY_FPS = 2.5               # body detections per second (people check and body fallback)
 
 
 @dataclass
@@ -122,10 +124,15 @@ def analyze(path: str, words: list[dict] | None = None, quality: str = "standard
     t0 = time.perf_counter()
     stage("people")
     every = max(1, int(round(frames.fps)))
-    bodies = BodyDetector().detect(frames, every=every)
-    mark_checked(bodies, set(range(0, len(frames.data), every)))
+    body_every = max(1, int(round(frames.fps / BODY_FPS)))
+    bodies = BodyDetector().detect(frames, every=body_every)
+    checked = list(range(0, len(frames.data), body_every))
+    mark_checked(bodies, set(checked))
     for shot_tracks in tracks.values():
         classify(shot_tracks, frames, bodies)
+    # People whose face is lost (looking down, turned away, backlit, blurred)
+    # are followed by their body; faceless bodies can be people too.
+    tracks = {s.index: join_bodies(s, tracks[s.index], bodies, checked, frames) for s in shots}
     timings["people"] = time.perf_counter() - t0
 
     # Where the content is, for shots without people.
