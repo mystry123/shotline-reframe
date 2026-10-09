@@ -194,6 +194,8 @@ def _follow(shot: Shot, tracks: list[Track], crop_w: float, crop_h: float, fps: 
 
 SWITCH_DELAY = 0.25          # cut to a new speaker this long after they start
 MIN_LAYOUT_S = 2.5           # no framing shorter than this
+CLOSE_FRAMINGS = 0.4         # two speakers' framings overlapping more than this (IoU): one framing of both, held
+BOTH = "both"                # speaking(t) may return (a, b): both talking at once (crosstalk)
 
 
 def _speaker_runs(shot: Shot, a: Track, b: Track, speaking: "callable") -> list[tuple[float, float, Track]] | None:
@@ -201,10 +203,12 @@ def _speaker_runs(shot: Shot, a: Track, b: Track, speaking: "callable") -> list[
     be told (then the caller splits instead of guessing)."""
     step = 0.2
     times = np.arange(shot.start, shot.end, step)
-    who: list[Track | None] = []
+    who: list = []
     for t in times:
         tr = speaking(t - SWITCH_DELAY)
-        who.append(tr if tr in (a, b) else None)
+        if isinstance(tr, (tuple, list)):
+            tr = BOTH if a in tr and b in tr else next((x for x in tr if x in (a, b)), None)
+        who.append(tr if tr in (a, b) or tr == BOTH else None)
     if all(w is None for w in who):
         return None
     # Hold the last speaker through pauses; before anyone speaks, use the first speaker.
@@ -625,20 +629,70 @@ def _plan_shot(shot: Shot, tracks: list[Track], target_aspect: float, pic_aspect
                        "over-the-shoulder: framing the person facing the camera")
     # Follow whoever is talking, when we know who that is.
     runs = _speaker_runs(shot, a, b, speaking) if speaking else None
+    if runs and len({id(w) for _, _, w in runs}) > 1 and _close_framings(a, b, target_aspect, pic_aspect, min_crop_h):
+        # Switching between two nearly identical framings is a jump cut that
+        # says nothing: frame both, a little wider, and hold.
+        both = _both_in_one(shot, a, b, target_aspect, pic_aspect, fps, "two speakers close together: one framing of both")
+        if both is not None:
+            return both
     if runs:
         segments = []
         for start, end, who in runs:
             part = Shot(shot.index, start, end)
+            if who == BOTH:          # talking over each other: show both
+                segments.append(_both_in_one(part, a, b, target_aspect, pic_aspect, fps, "both talking at once")
+                                or _split(part, a, b, target_aspect, pic_aspect, fps, min_crop_h, "both talking at once"))
+                continue
             w, h = _crop_size(target_aspect, pic_aspect, who.median("h"), FACE_FRACTION_SINGLE, min_crop_h)
             segments.append(Segment(start, end, "single", [Zone((0, 0, 1, 1), _follow(part, [who], w, h, fps), f"track {who.track_id}")],
                                     "following the speaker"))
         return segments
+    return _split(shot, a, b, target_aspect, pic_aspect, fps, min_crop_h, "two people apart")
+
+
+def _split(shot: Shot, a: Track, b: Track, target_aspect: float, pic_aspect: float, fps: float,
+           min_crop_h: float, reason: str) -> Segment:
     zone_aspect = target_aspect * 2  # each zone is the full width and half the height
     zones = []
     for i, p in enumerate((a, b)):
         zw, zh = _crop_size(zone_aspect, pic_aspect, p.median("h"), FACE_FRACTION_SPLIT, min_crop_h / 2)
         zones.append(Zone((0, 0.5 * i, 1, 0.5), _follow(shot, [p], zw, zh, fps), f"track {p.track_id}"))
-    return Segment(shot.start, shot.end, "split", zones, "two people apart")
+    return Segment(shot.start, shot.end, "split", zones, reason)
+
+
+def _crop_iou(a: tuple[float, float, float, float], b: tuple[float, float, float, float]) -> float:
+    ix = max(0.0, min(a[0] + a[2], b[0] + b[2]) - max(a[0], b[0]))
+    iy = max(0.0, min(a[1] + a[3], b[1] + b[3]) - max(a[1], b[1]))
+    inter = ix * iy
+    union = a[2] * a[3] + b[2] * b[3] - inter
+    return inter / union if union > 0 else 0.0
+
+
+def _close_framings(a: Track, b: Track, target_aspect: float, pic_aspect: float, min_crop_h: float) -> bool:
+    """Would framing a and framing b (each as a single) overlap by more than CLOSE_FRAMINGS?"""
+    boxes = []
+    for p in (a, b):
+        w, h = _crop_size(target_aspect, pic_aspect, p.median("h"), FACE_FRACTION_SINGLE, min_crop_h)
+        x = float(np.clip(p.median("cx") - w / 2, 0, 1 - w))
+        y = float(np.clip(p.median("eye_y") - EYE_LINE * h, 0, 1 - h))
+        boxes.append((x, y, w, h))
+    return _crop_iou(*boxes) > CLOSE_FRAMINGS
+
+
+def _both_in_one(shot: Shot, a: Track, b: Track, target_aspect: float, pic_aspect: float, fps: float,
+                 reason: str) -> Segment | None:
+    """One crop of the target shape holding both faces with some room, if the picture allows it."""
+    max_w, max_h = _crop_for_target(target_aspect, pic_aspect)
+    x0 = min(a.median("x"), b.median("x"))
+    x1 = max(a.median("x") + a.median("w"), b.median("x") + b.median("w"))
+    need_w = (x1 - x0) * 1.3
+    if need_w > max_w:
+        return None
+    face_h = max(a.median("h"), b.median("h"))
+    w, h = _crop_size(target_aspect, pic_aspect, face_h, FACE_FRACTION_SINGLE, 0.0)
+    if w < need_w:
+        w, h = need_w, min(max_h, h * need_w / w)
+    return Segment(shot.start, shot.end, "single", [Zone((0, 0, 1, 1), _follow(shot, [a, b], w, h, fps), "both")], reason)
 
 
 # ---------------------------------------------------------------------------

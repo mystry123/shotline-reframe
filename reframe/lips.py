@@ -16,10 +16,10 @@ mapping, or to framing everyone).
 
 No extra model or dependency: YuNet's landmarks are enough to align faces.
 
-EXPERIMENTAL, not used by the engine yet: on clip001 (faces ~54 px tall in
-a 360p source) mouth motion does not separate talking from listening
-(correlation with word timings -0.2..+0.45 across shots). Needs higher-
-resolution multi-speaker footage to calibrate before it is wired in.
+Calibrated on clip008 (720p interview, faces ~86 px in two-shots): 8 of 9
+turns right, 1 no answer, none wrong. On small faces (clip001, ~54 px in
+360p) the scores are close and it answers nothing, which is the intent: no
+answer is safe, a wrong one moves the camera to the wrong person.
 """
 
 from __future__ import annotations
@@ -37,6 +37,7 @@ from .speakers import Turn
 from .tracks import Track
 
 LIP_FPS = 15.0
+LIP_WIDTH = 960      # decode width for mouth motion (clip008: 640 px 7/9 right, 960 px 9/9, 1280 px 8/9; never wrong)
 TEMPLATE = np.array([[38.29, 51.70], [73.53, 51.50], [56.03, 71.74], [41.55, 92.37], [70.73, 92.20]], np.float32)
 MOUTH = (slice(80, 108), slice(32, 80))      # rows, cols in the aligned 112x112 face
 EYES = (slice(38, 64), slice(26, 86))

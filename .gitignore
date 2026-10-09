@@ -10,3 +10,4 @@ cache/
 .env
 eval/.cache/
 samples/
+testdata/clip008.transcript.json

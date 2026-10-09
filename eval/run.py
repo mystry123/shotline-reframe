@@ -24,7 +24,7 @@ from reframe.engine import analyze, parse_ratio, plan
 from reframe.options import Options
 
 from . import synthetic
-from .metrics import camera_metrics, picture_iou, plan_metrics, transition_f1
+from .metrics import camera_metrics, picture_iou, plan_metrics, speaker_metrics, transition_f1
 
 ROOT = Path(__file__).resolve().parent
 REPO = ROOT.parent
@@ -44,6 +44,8 @@ GATES = {
     "transition_f1": ("down", 0.02, "abs"),
     "picture_iou": ("down", 0.02, "abs"),
     "camera_error": ("up", 0.05, "abs"),
+    "wrong_speaker_rate": ("up", 0.0, "abs"),
+    "speaker_answered": ("down", 0.05, "abs"),
 }
 REL_FLOOR = {"jerk_p95": 0.5, "reversals_per_min": 1.0}
 ZOOM_WARN = 2.0
@@ -77,6 +79,8 @@ def evaluate(synthetic_only: bool = False) -> dict:
         if truth.get("transitions") is not None:
             entry["analysis"].update(transition_f1(a, truth["transitions"]))
         entry["analysis"].update(camera_metrics(a, truth.get("camera", {})))
+        if truth.get("speaker_x"):
+            entry["analysis"].update(speaker_metrics(a, truth["speaker_x"]))
         pic_aspect = a.area.w / a.area.h
         for ratio in RATIOS:
             if abs(parse_ratio(ratio) / pic_aspect - 1) < 0.03:
@@ -126,7 +130,8 @@ def table(results: dict) -> str:
     for clip, entry in results["clips"].items():
         a = entry["analysis"]
         extra = f"picture_iou={a['picture_iou']}" + (f" transition_f1={a['transition_f1']}" if "transition_f1" in a else "") \
-            + (f" camera_error={a['camera_error']}" if "camera_error" in a else "")
+            + (f" camera_error={a['camera_error']}" if "camera_error" in a else "") \
+            + (f" wrong_speaker_rate={a['wrong_speaker_rate']} answered={a['speaker_answered']}" if "wrong_speaker_rate" in a else "")
         lines.append(f"{clip:22} {'':6} {extra}")
         for ratio, m in entry["plans"].items():
             cells = []

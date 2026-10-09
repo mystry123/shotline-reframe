@@ -121,9 +121,13 @@ def plan_metrics(analysis, plan: dict) -> dict:
 
     face_cut = face_n = cap_cut = cap_n = 0
     kept = []
-    for shot in analysis.shots:
+    from reframe.engine import TEXT_PAD_S, shot_pieces
+    starts = {round(s.start, 3) for s in analysis.shots}
+    for shot in (piece for s in analysis.shots for piece in shot_pieces(analysis, s)):
+        # A piece starting inside a shot eases in before its text appears (TEXT_PAD_S lead).
+        lead = 0.0 if round(shot.start, 3) in starts else TEXT_PAD_S
         people = [tr for tr in analysis.tracks[shot.index] if tr.is_person]
-        band = picture_captions(analysis, shot)
+        band = picture_captions(analysis, shot)   # per piece: text is protected only while it is on screen
         band_ff = _to_frame(band, area, W, H) if band else None
         samples = [v for v in views if shot.start <= v[0] < shot.end]
         if len(people) == 1:
@@ -139,7 +143,9 @@ def plan_metrics(analysis, plan: dict) -> dict:
                 x, y, w, h = crop
                 kept.append(max(0.0, min(body[3], y + h) - max(body[1], y)) / max(body[3] - body[1], 1e-6))
         if band_ff:
-            for _, _, crop in samples:
+            for t, _, crop in samples:
+                if t < shot.start + lead:
+                    continue
                 cap_n += 1
                 cap_cut += _overlaps(band_ff, crop) and not _inside(band_ff, crop)
 
@@ -195,3 +201,38 @@ def camera_metrics(analysis, truth: dict) -> dict:
         expected = lo + (hi - lo) * min(1.0, (frames - 1) / analysis.fps / truth["over_s"])
         out["camera_error"] = round(abs(measured - expected) / (expected - lo), 3)
     return out
+
+
+def speaker_metrics(analysis, speaker_x: dict) -> dict:
+    """In shots with several people, during speech: does the engine name the
+    person who is talking? `speaker_x`: where each voice sits (x range,
+    share of the picture). wrong_speaker_rate: share of answered speech
+    seconds given to the wrong person; speaker_answered: share answered."""
+    from reframe.speakers import active_person
+    right = wrong = total = 0.0
+    step = 0.2
+    for shot in analysis.shots:
+        people = [t for t in analysis.tracks[shot.index] if t.is_person]
+        if len(people) < 2:
+            continue
+        for turn in analysis.turns:
+            if turn.speaker not in speaker_x:
+                continue
+            lo, hi = speaker_x[turn.speaker]
+            for t in np.arange(max(turn.start, shot.start), min(turn.end, shot.end), step):
+                total += step
+                who = next((tr for lt in getattr(analysis, "lip_turns", []) if lt.shot == shot.index
+                            and lt.track_id is not None and lt.start <= t <= lt.end
+                            for tr in people if tr.track_id == lt.track_id), None)
+                if who is None:
+                    pid = active_person(analysis.turns, analysis.people, t)
+                    who = next((tr for tr in people if analysis.people.person_of.get((shot.index, tr.track_id)) == pid), None)
+                if who is None:
+                    continue
+                if lo <= who.median("cx") < hi:
+                    right += step
+                else:
+                    wrong += step
+    if total == 0:
+        return {}
+    return {"wrong_speaker_rate": round(wrong / max(right + wrong, 1e-9), 3), "speaker_answered": round((right + wrong) / total, 3)}

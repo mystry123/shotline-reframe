@@ -17,6 +17,7 @@ from dataclasses import dataclass, asdict, field
 
 from .decode import decode
 from .bodies import BodyDetector
+from .lips import LIP_WIDTH, speakers_in_shot
 from .persons import join_bodies
 from .faces import FaceDetector
 from .content import ContentBox, content_boxes
@@ -57,6 +58,8 @@ class Analysis:
     motion: list = field(default_factory=list)
     # Cuts, dissolves and fades between shots (shots meet at their middles).
     transitions: list = field(default_factory=list)
+    # Who is talking, from mouth motion, during speech in shots with several people (lips.py).
+    lip_turns: list = field(default_factory=list)
 
 
 # Rough share of analysis time per stage, for progress reporting.
@@ -147,7 +150,15 @@ def analyze(path: str, words: list[dict] | None = None, quality: str = "standard
     describe_tracks(tracks, frames)
     person_of = group_people(tracks)
     turns = load_turns(words or [])
-    people = map_speakers(turns, shots, tracks, person_of)
+    # With several people in a shot, mouth motion says who is talking (lips.py).
+    lip_turns = []
+    if turns:
+        for s in shots:
+            people_here = [t for t in tracks[s.index] if t.is_person]
+            if len(people_here) >= 2:
+                lip_turns += speakers_in_shot(info, area, s, people_here, turns, max(q["width"], LIP_WIDTH))
+    people = map_speakers(turns, shots, tracks, person_of,
+                          [(lt.speaker, lt.shot, lt.track_id, lt.end - lt.start) for lt in lip_turns if lt.track_id is not None])
     timings["speakers"] = time.perf_counter() - t0
 
     stills = {}
@@ -157,7 +168,7 @@ def analyze(path: str, words: list[dict] | None = None, quality: str = "standard
         if ok:
             stills[s.index] = jpg.tobytes()
     return Analysis(info, area, shots, tracks, turns, people, text, content, text_in_picture, quality, q["fps"], timings,
-                    stills, motion, transitions)
+                    stills, motion, transitions, lip_turns)
 
 
 SCREEN_MIN_BOXES = 15          # a frame with this much small text is a screen (page, app, recording)
@@ -178,8 +189,8 @@ def _shot_text(analysis: "Analysis", shot: Shot) -> tuple[bool, tuple[float, flo
     # Caption-size text, and shaped like text (a word or line is wider than
     # it is tall; square blobs are beards, logos and patterns).
     pic_aspect = analysis.area.w / analysis.area.h
-    big = [[b for b in frame if b.h >= CAPTION_MIN_H and (b.x1 - b.x0) * pic_aspect / b.h >= CAPTION_MIN_ASPECT]
-           for frame in samples]
+    big = [[b for b in frame if b.h >= CAPTION_MIN_H and (b.x1 - b.x0) * pic_aspect / b.h >= CAPTION_MIN_ASPECT
+            and not _is_watermark(analysis, b)] for frame in samples]
     with_text = [b for b in big if b]
     if len(with_text) < CAPTION_MIN_SHARE * len(samples):
         return screen, None
@@ -194,6 +205,116 @@ def _shot_text(analysis: "Analysis", shot: Shot) -> tuple[bool, tuple[float, flo
         if band:
             x0, y0, x1, y1 = min(x0, band[0]), min(y0, band[1]), max(x1, band[2]), max(y1, band[3])
     return screen, (x0, y0, x1, y1)
+
+
+WATERMARK_SHARE = 0.5      # text at one fixed place and size in this share of sampled frames...
+WATERMARK_SHOTS = 3        # ...across at least this many shots is a logo or watermark, not captions
+WATERMARK_TOL = 0.015      # box edges within this (share of the picture) count as the same place
+
+
+def _watermarks(analysis: "Analysis") -> list[tuple[float, float, float, float]]:
+    """Logos and watermarks: text boxes that sit at the same place with the
+    same size all through the video (captions change width with every line)."""
+    cached = getattr(analysis, "_watermark_cache", None)
+    if cached is not None:
+        return cached
+    every = max(1, int(round(analysis.fps)))
+    sampled = [(i, frame) for i, frame in enumerate(analysis.text_in_picture) if i % every == 0]
+    clusters: list[dict] = []
+    for i, frame in sampled:
+        for b in frame:
+            box = (b.x0, b.y0, b.x1, b.y1)
+            c = next((c for c in clusters if all(abs(u - v) <= WATERMARK_TOL for u, v in zip(c["box"], box))), None)
+            if c is None:
+                clusters.append({"box": box, "frames": {i}})
+            else:
+                c["frames"].add(i)
+    shot_of = lambda i: next((s.index for s in analysis.shots if s.start <= i / analysis.fps < s.end), -1)  # noqa: E731
+    marks = [c["box"] for c in clusters
+             if len(c["frames"]) >= WATERMARK_SHARE * max(1, len(sampled))
+             and len({shot_of(i) for i in c["frames"]}) >= WATERMARK_SHOTS]
+    object.__setattr__(analysis, "_watermark_cache", marks)
+    return marks
+
+
+def _is_watermark(analysis: "Analysis", b) -> bool:
+    return any(all(abs(u - v) <= 2 * WATERMARK_TOL for u, v in zip(m, (b.x0, b.y0, b.x1, b.y1)))
+               for m in _watermarks(analysis))
+
+
+TEXT_MOST_OF_SHOT = 0.7     # text on screen this share of a shot: keep it for the whole shot
+TEXT_PAD_S = 0.6            # keep text in frame this long before it appears and after it goes
+TEXT_JOIN_S = 2.0           # text gaps shorter than this are one stretch
+MIN_PIECE_S = 1.5           # no framing piece shorter than this
+TEXT_MIN_RUN = 3            # text must be seen in this many samples in a row (~seconds) to count
+
+
+def _text_samples(analysis: "Analysis", shot: Shot) -> list[tuple[float, bool]]:
+    """(time, caption-size text on screen) about once a second through the shot."""
+    every = max(1, int(round(analysis.fps)))
+    pic_aspect = analysis.area.w / analysis.area.h
+    out = []
+    for i, frame in enumerate(analysis.text_in_picture):
+        t = i / analysis.fps
+        if i % every or not (shot.start <= t < shot.end):
+            continue
+        out.append((t, any(b.h >= CAPTION_MIN_H and (b.x1 - b.x0) * pic_aspect / b.h >= CAPTION_MIN_ASPECT
+                           and not _is_watermark(analysis, b) for b in frame)))
+    return out
+
+
+def shot_pieces(analysis: "Analysis", shot: Shot) -> list[Shot]:
+    """A shot split where on-screen text (a name caption, a banner) comes and
+    goes, so the framing keeps the text only while it is there. Text on screen
+    most of the shot (running captions), or none: the whole shot, one piece."""
+    if not getattr(analysis, "text_in_picture", None):
+        return [shot]
+    samples = _text_samples(analysis, shot)
+    if not samples:
+        return [shot]
+    # A graphic stays up for seconds; a hit or two in a row is a pattern on a
+    # shirt or a hand. One missed sample inside a run doesn't break it.
+    on = [o for _, o in samples]
+    filled = [on[k] or (0 < k < len(on) - 1 and on[k - 1] and on[k + 1]) for k in range(len(on))]
+    keep = [False] * len(on)
+    k = 0
+    while k < len(on):
+        if not filled[k]:
+            k += 1
+            continue
+        j = k
+        while j < len(on) and filled[j]:
+            j += 1
+        if sum(on[k:j]) >= TEXT_MIN_RUN:
+            keep[k:j] = [True] * (j - k)
+        k = j
+    samples = [(t, kept) for (t, _), kept in zip(samples, keep)]
+    share = float(np.mean([on for _, on in samples]))
+    if share == 0 or share >= TEXT_MOST_OF_SHOT or shot.duration < 2 * MIN_PIECE_S:
+        return [shot]
+    spans: list[list[float]] = []
+    for t, on in samples:
+        if not on:
+            continue
+        a, b = max(shot.start, t - TEXT_PAD_S), min(shot.end, t + 1.0 + TEXT_PAD_S)
+        if spans and a - spans[-1][1] < TEXT_JOIN_S:
+            spans[-1][1] = max(spans[-1][1], b)
+        else:
+            spans.append([a, b])
+    # Pieces: text spans and the stretches between them; a sliver joins the text next to it.
+    edges = [shot.start]
+    for a, b in spans:
+        edges += [a, b]
+    edges.append(shot.end)
+    edges = sorted(set(round(e, 3) for e in edges))
+    kept = [edges[0]]
+    for e in edges[1:-1]:
+        if e - kept[-1] >= MIN_PIECE_S and shot.end - e >= MIN_PIECE_S:
+            kept.append(e)
+    kept.append(edges[-1])
+    if len(kept) <= 2:
+        return [shot]
+    return [Shot(shot.index, kept[k], kept[k + 1]) for k in range(len(kept) - 1)]
 
 
 def _caption_band(analysis: "Analysis") -> tuple[float, float, float, float] | None:
@@ -212,7 +333,8 @@ def _caption_band(analysis: "Analysis") -> tuple[float, float, float, float] | N
     boxes = [b for i, frame in enumerate(analysis.text_in_picture)
              if i % every == 0 and len(frame) < 10 and i in person_frames
              for b in frame if b.h >= CAPTION_MIN_H and (b.y0 + b.y1) / 2 >= 0.5
-             and (b.x1 - b.x0) * analysis.area.w / analysis.area.h / b.h >= CAPTION_MIN_ASPECT]
+             and (b.x1 - b.x0) * analysis.area.w / analysis.area.h / b.h >= CAPTION_MIN_ASPECT
+             and not _is_watermark(analysis, b)]
     band = None
     if len(boxes) >= 3:
         band = (float(np.percentile([b.x0 for b in boxes], 5)), float(np.percentile([b.y0 for b in boxes], 5)),
@@ -304,10 +426,21 @@ def shot_options(analysis: Analysis, ratio: str, options: Options | None = None,
     # How far the camera may zoom in: plan output resolution + the user's zoom choice.
     min_crop_h = options.min_crop_height(area.h)
     out = []
-    for s in analysis.shots:
+    for s in (piece for shot in analysis.shots for piece in shot_pieces(analysis, shot)):
         shot_tracks = analysis.tracks[s.index]
 
         def speaking(t: float, s=s, shot_tracks=shot_tracks):
+            # Talking over each other: two people's turns at once, both on screen.
+            talking = {turn.speaker for turn in analysis.turns if turn.start <= t <= turn.end}
+            if len(talking) >= 2:
+                pids = {analysis.people.speaker_person[spk] for spk in talking if spk in analysis.people.speaker_person}
+                on_screen = [tr for tr in shot_tracks if analysis.people.person_of.get((s.index, tr.track_id)) in pids]
+                if len(on_screen) >= 2:
+                    return tuple(on_screen[:2])
+            # Seen talking (mouth motion) beats heard talking (voice-to-person mapping).
+            for lt in getattr(analysis, "lip_turns", []):
+                if lt.shot == s.index and lt.track_id is not None and lt.start <= t <= lt.end:
+                    return next((tr for tr in shot_tracks if tr.track_id == lt.track_id), None)
             pid = active_person(analysis.turns, analysis.people, t)
             if pid is None:
                 return None
