@@ -71,19 +71,23 @@ class Frames:
         return np.arange(len(self.data)) / self.fps
 
 
-def decode(info: VideoInfo, area: Rect, fps: float, max_width: int = 640, gray: bool = False, upscale_to: int = 0) -> Frames:
+def decode(info: VideoInfo, area: Rect, fps: float, max_width: int = 640, gray: bool = False, upscale_to: int = 0,
+           start: float = 0.0, duration: float | None = None) -> Frames:
     """`upscale_to`: analyse small sources at this width (helps detectors find
-    small faces in low-resolution uploads)."""
+    small faces in low-resolution uploads). `start`/`duration`: decode only
+    that stretch (frame i is then at start + i / fps)."""
     width = min(max_width, max(area.w, upscale_to))
     width -= width % 2
     height = int(round(area.h * width / area.w / 2) * 2)
     channels = 1 if gray else 3
     frame_bytes = width * height * channels
-    expected = int(info.duration * fps) + 2
+    span = duration if duration is not None else info.duration - start
+    expected = int(span * fps) + 2
     store = FrameStore(compressed=expected * frame_bytes > RAW_BUDGET, gray=gray)
     vf = f"crop={area.w}:{area.h}:{area.x}:{area.y},fps={fps},scale={width}:{height}:flags=area"
     proc = subprocess.Popen(
-        ["ffmpeg", "-v", "error", "-nostdin", "-i", info.path, "-an", "-vf", vf,
+        ["ffmpeg", "-v", "error", "-nostdin", *(["-ss", f"{start:.3f}"] if start > 0 else []), "-i", info.path,
+         *(["-t", f"{duration:.3f}"] if duration is not None else []), "-an", "-vf", vf,
          "-pix_fmt", "gray" if gray else "bgr24", "-f", "rawvideo", "pipe:1"],
         stdout=subprocess.PIPE, stderr=subprocess.PIPE,
     )

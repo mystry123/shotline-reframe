@@ -54,7 +54,8 @@ def _clips(synthetic_only: bool) -> list[tuple[str, Path, dict, list | None]]:
     out = [(f"syn/{n}", synthetic.ensure(n), synthetic.truth(n), None) for n in synthetic.CLIPS]
     if synthetic_only:
         return out
-    out += [(f"local/{n}", synthetic.ensure_local(n), synthetic.LOCAL[n]["truth"], None) for n in synthetic.local_available()]
+    out += [(f"local/{n}", synthetic.ensure_local(n), synthetic.LOCAL[n]["truth"], synthetic.local_words(n))
+            for n in synthetic.local_available()]
     for label in sorted((ROOT / "labels").glob("*.json")):
         video = REPO / "testdata" / f"{label.stem}.mp4"
         if not video.exists():

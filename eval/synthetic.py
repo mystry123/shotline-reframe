@@ -15,6 +15,8 @@ import json
 import subprocess
 from pathlib import Path
 
+import numpy as np
+
 CACHE = Path(__file__).resolve().parent / ".cache" / "synthetic"
 FPS = 25
 
@@ -106,6 +108,26 @@ LOCAL: dict[str, dict] = {
                    "format=yuv420p[v]"),
         "truth": {"transitions": [], "picture": {"x": 0, "y": 0, "w": 1280, "h": 720}},
     },
+    "real_two_speakers": {   # two people side by side, taking turns (from clip001: guest left, host right)
+        "needs": ["clip001"],
+        "args": ["-i", "{clip001}"],
+        "filter": (
+            "[0:v]crop=360:202:0:219,scale=640:360,setsar=1,fps=25,split=4[g1][g2][h1][h2];"
+            # 0-3 s: the guest talks (left), the host listens: a silent second, forward then back (right).
+            "[g1]trim=5.5:8.5,setpts=PTS-STARTPTS[gs];"
+            "[h1]trim=17.05:17.8,setpts=PTS-STARTPTS,split[hf][hr0];[hr0]reverse[hr];"
+            "[hf][hr]concat=n=2,loop=loop=1:size=38,trim=0:3,setpts=PTS-STARTPTS[hq];"
+            # 3-6 s: the host talks (right), the guest listens (left).
+            "[g2]trim=4.45:5.15,setpts=PTS-STARTPTS,split[gf][gr0];[gr0]reverse[gr];"
+            "[gf][gr]concat=n=2,loop=loop=2:size=35,trim=0:3,setpts=PTS-STARTPTS[gq];"
+            "[h2]trim=18.1:21.1,setpts=PTS-STARTPTS[hs];"
+            "[gs][hq]hstack[a];[gq][hs]hstack[b];[a][b]concat=n=2,format=yuv420p[v]"),
+        # Each side continues the same camera angle at 3 s, so there is no visible cut.
+        "truth": {"transitions": [], "picture": {"x": 0, "y": 0, "w": 1280, "h": 360},
+                  # who talks when: the side of the picture their face is on
+                  "speech": [{"start": 0.1, "end": 2.9, "speaker": "speaker_0", "side": "left"},
+                             {"start": 3.1, "end": 5.9, "speaker": "speaker_1", "side": "right"}]},
+    },
     "real_blurred_bars": {
         "needs": ["clip003"],
         "args": ["-t", "20", "-i", "{clip003}"],
@@ -116,6 +138,15 @@ LOCAL: dict[str, dict] = {
                   "picture": {"x": 656, "y": 0, "w": 608, "h": 1080}},
     },
 }
+
+
+def local_words(name: str) -> list[dict] | None:
+    """A transcript for a local clip with known speech (one word every 0.3 s)."""
+    speech = LOCAL[name]["truth"].get("speech")
+    if not speech:
+        return None
+    return [{"text": "word", "type": "word", "speaker_id": sp["speaker"], "start": round(t, 2), "end": round(t + 0.25, 2)}
+            for sp in speech for t in np.arange(sp["start"], sp["end"] - 0.25, 0.3)]
 
 
 def local_available() -> list[str]:
