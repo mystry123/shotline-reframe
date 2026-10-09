@@ -5,7 +5,7 @@
     "duration": 40.24,
     "picture_iou": 1.0,
     "recall_cut": 1.0,
-    "seconds": 10.0,
+    "seconds": 11.3,
     "transition_f1": 1.0,
     "transition_found": 6,
     "transition_truth": 6
@@ -44,7 +44,7 @@
    "analysis": {
     "duration": 43.05,
     "picture_iou": 1.0,
-    "seconds": 34.5
+    "seconds": 38.7
    },
    "plans": {
     "16:9": {
@@ -81,7 +81,7 @@
     "duration": 58.57,
     "picture_iou": 1.0,
     "recall_cut": 1.0,
-    "seconds": 48.8,
+    "seconds": 56.2,
     "transition_f1": 1.0,
     "transition_found": 26,
     "transition_truth": 26
@@ -116,11 +116,296 @@
     }
    }
   },
+  "clip004": {
+   "analysis": {
+    "duration": 343.12,
+    "picture_iou": 1.0,
+    "seconds": 438.2,
+    "transition_f1": 1.0,
+    "transition_found": 0,
+    "transition_truth": 0
+   },
+   "plans": {
+    "16:9": {
+     "caption_cut_rate": null,
+     "face_cut_rate": null,
+     "jerk_p95": 0.0,
+     "jumps": 0,
+     "person_kept": null,
+     "reversals_per_min": 0.0,
+     "zoom_p95": 0.56
+    },
+    "1:1": {
+     "caption_cut_rate": null,
+     "face_cut_rate": null,
+     "jerk_p95": 0.0,
+     "jumps": 0,
+     "person_kept": null,
+     "reversals_per_min": 0.0,
+     "zoom_p95": 0.56
+    },
+    "2:3": {
+     "caption_cut_rate": null,
+     "face_cut_rate": null,
+     "jerk_p95": 0.0,
+     "jumps": 0,
+     "person_kept": null,
+     "reversals_per_min": 0.0,
+     "zoom_p95": 0.56
+    }
+   }
+  },
+  "clip005": {
+   "analysis": {
+    "duration": 6.31,
+    "picture_iou": 1.0,
+    "seconds": 10.0,
+    "transition_f1": 1.0,
+    "transition_found": 0,
+    "transition_truth": 0
+   },
+   "plans": {
+    "16:9": {
+     "caption_cut_rate": null,
+     "face_cut_rate": null,
+     "jerk_p95": 0.0,
+     "jumps": 0,
+     "person_kept": null,
+     "reversals_per_min": 0.0,
+     "zoom_p95": 2.22
+    },
+    "1:1": {
+     "caption_cut_rate": null,
+     "face_cut_rate": null,
+     "jerk_p95": 0.0,
+     "jumps": 0,
+     "person_kept": null,
+     "reversals_per_min": 0.0,
+     "zoom_p95": 1.25
+    },
+    "2:3": {
+     "caption_cut_rate": null,
+     "face_cut_rate": null,
+     "jerk_p95": 0.0,
+     "jumps": 0,
+     "person_kept": null,
+     "reversals_per_min": 0.0,
+     "zoom_p95": 0.83
+    },
+    "9:16": {
+     "caption_cut_rate": null,
+     "face_cut_rate": null,
+     "jerk_p95": 5.395,
+     "jumps": 0,
+     "person_kept": null,
+     "reversals_per_min": 0.0,
+     "zoom_p95": 0.76
+    }
+   }
+  },
+  "clip006": {
+   "analysis": {
+    "duration": 28.78,
+    "picture_iou": 1.0,
+    "seconds": 27.0,
+    "transition_f1": 1.0,
+    "transition_found": 0,
+    "transition_truth": 0
+   },
+   "plans": {
+    "16:9": {
+     "caption_cut_rate": null,
+     "face_cut_rate": 0.0,
+     "jerk_p95": 0.0,
+     "jumps": 0,
+     "person_kept": 1.0,
+     "reversals_per_min": 0.0,
+     "zoom_p95": 2.3
+    },
+    "1:1": {
+     "caption_cut_rate": null,
+     "face_cut_rate": 0.0,
+     "jerk_p95": 0.0,
+     "jumps": 0,
+     "person_kept": 0.829,
+     "reversals_per_min": 0.0,
+     "zoom_p95": 2.5
+    },
+    "2:3": {
+     "caption_cut_rate": null,
+     "face_cut_rate": 0.0,
+     "jerk_p95": 0.0,
+     "jumps": 0,
+     "person_kept": 0.829,
+     "reversals_per_min": 0.0,
+     "zoom_p95": 2.5
+    }
+   }
+  },
+  "clip007": {
+   "analysis": {
+    "duration": 16.86,
+    "picture_iou": 1.0,
+    "seconds": 17.5,
+    "transition_f1": 1.0,
+    "transition_found": 0,
+    "transition_truth": 0
+   },
+   "plans": {
+    "16:9": {
+     "caption_cut_rate": null,
+     "face_cut_rate": null,
+     "jerk_p95": 0.0,
+     "jumps": 0,
+     "person_kept": null,
+     "reversals_per_min": 0.0,
+     "zoom_p95": 1.26
+    },
+    "1:1": {
+     "caption_cut_rate": null,
+     "face_cut_rate": null,
+     "jerk_p95": 0.0,
+     "jumps": 0,
+     "person_kept": null,
+     "reversals_per_min": 0.0,
+     "zoom_p95": 1.26
+    },
+    "2:3": {
+     "caption_cut_rate": null,
+     "face_cut_rate": null,
+     "jerk_p95": 0.0,
+     "jumps": 0,
+     "person_kept": null,
+     "reversals_per_min": 0.0,
+     "zoom_p95": 1.26
+    }
+   }
+  },
+  "local/real_blurred_bars": {
+   "analysis": {
+    "duration": 20.0,
+    "picture_iou": 1.0,
+    "recall_cut": 1.0,
+    "seconds": 18.2,
+    "transition_f1": 1.0,
+    "transition_found": 12,
+    "transition_truth": 12
+   },
+   "plans": {
+    "16:9": {
+     "caption_cut_rate": 0.0,
+     "face_cut_rate": 0.0,
+     "jerk_p95": 0.0,
+     "jumps": 0,
+     "person_kept": 0.991,
+     "reversals_per_min": 0.0,
+     "zoom_p95": 1.29
+    },
+    "1:1": {
+     "caption_cut_rate": 0.0,
+     "face_cut_rate": 0.0,
+     "jerk_p95": 0.0,
+     "jumps": 0,
+     "person_kept": 0.983,
+     "reversals_per_min": 0.0,
+     "zoom_p95": 1.46
+    },
+    "2:3": {
+     "caption_cut_rate": 0.0,
+     "face_cut_rate": 0.0,
+     "jerk_p95": 0.0,
+     "jumps": 0,
+     "person_kept": 0.94,
+     "reversals_per_min": 0.0,
+     "zoom_p95": 1.22
+    }
+   }
+  },
+  "local/real_dissolve": {
+   "analysis": {
+    "duration": 7.0,
+    "picture_iou": 1.0,
+    "recall_dissolve": 1.0,
+    "seconds": 7.5,
+    "transition_f1": 1.0,
+    "transition_found": 1,
+    "transition_truth": 1
+   },
+   "plans": {
+    "16:9": {
+     "caption_cut_rate": null,
+     "face_cut_rate": 0.0,
+     "jerk_p95": 0.0,
+     "jumps": 0,
+     "person_kept": 1.0,
+     "reversals_per_min": 0.0,
+     "zoom_p95": 4.0
+    },
+    "1:1": {
+     "caption_cut_rate": null,
+     "face_cut_rate": 0.0,
+     "jerk_p95": 0.0,
+     "jumps": 0,
+     "person_kept": 0.902,
+     "reversals_per_min": 0.0,
+     "zoom_p95": 2.5
+    },
+    "2:3": {
+     "caption_cut_rate": null,
+     "face_cut_rate": 0.0,
+     "jerk_p95": 0.0,
+     "jumps": 0,
+     "person_kept": 0.902,
+     "reversals_per_min": 0.0,
+     "zoom_p95": 2.5
+    }
+   }
+  },
+  "local/real_fade": {
+   "analysis": {
+    "duration": 7.0,
+    "picture_iou": 1.0,
+    "recall_fade": 1.0,
+    "seconds": 7.6,
+    "transition_f1": 1.0,
+    "transition_found": 1,
+    "transition_truth": 1
+   },
+   "plans": {
+    "16:9": {
+     "caption_cut_rate": null,
+     "face_cut_rate": 0.0,
+     "jerk_p95": 0.0,
+     "jumps": 0,
+     "person_kept": 1.0,
+     "reversals_per_min": 0.0,
+     "zoom_p95": 4.0
+    },
+    "1:1": {
+     "caption_cut_rate": null,
+     "face_cut_rate": 0.0,
+     "jerk_p95": 0.0,
+     "jumps": 0,
+     "person_kept": 0.902,
+     "reversals_per_min": 0.0,
+     "zoom_p95": 2.5
+    },
+    "2:3": {
+     "caption_cut_rate": null,
+     "face_cut_rate": 0.0,
+     "jerk_p95": 0.0,
+     "jumps": 0,
+     "person_kept": 0.902,
+     "reversals_per_min": 0.0,
+     "zoom_p95": 2.5
+    }
+   }
+  },
   "syn/black_bars": {
    "analysis": {
     "duration": 4.0,
     "picture_iou": 1.0,
-    "seconds": 3.5,
+    "seconds": 3.6,
     "transition_f1": 1.0,
     "transition_found": 0,
     "transition_truth": 0
@@ -158,47 +443,8 @@
   "syn/blurred_bars": {
    "analysis": {
     "duration": 4.0,
-    "picture_iou": 0.3167,
-    "seconds": 1.4,
-    "transition_f1": 1.0,
-    "transition_found": 0,
-    "transition_truth": 0
-   },
-   "plans": {
-    "1:1": {
-     "caption_cut_rate": null,
-     "face_cut_rate": null,
-     "jerk_p95": 0.0,
-     "jumps": 0,
-     "person_kept": null,
-     "reversals_per_min": 0.0,
-     "zoom_p95": 0.56
-    },
-    "2:3": {
-     "caption_cut_rate": null,
-     "face_cut_rate": null,
-     "jerk_p95": 0.0,
-     "jumps": 0,
-     "person_kept": null,
-     "reversals_per_min": 0.0,
-     "zoom_p95": 0.38
-    },
-    "9:16": {
-     "caption_cut_rate": null,
-     "face_cut_rate": null,
-     "jerk_p95": 0.0,
-     "jumps": 0,
-     "person_kept": null,
-     "reversals_per_min": 0.0,
-     "zoom_p95": 0.32
-    }
-   }
-  },
-  "syn/blurred_bars_tall": {
-   "analysis": {
-    "duration": 4.0,
-    "picture_iou": 0.3167,
-    "seconds": 3.4,
+    "picture_iou": 1.0,
+    "seconds": 3.8,
     "transition_f1": 1.0,
     "transition_found": 0,
     "transition_truth": 0
@@ -211,7 +457,7 @@
      "jumps": 0,
      "person_kept": null,
      "reversals_per_min": 0.0,
-     "zoom_p95": 0.56
+     "zoom_p95": 1.0
     },
     "1:1": {
      "caption_cut_rate": null,
@@ -220,9 +466,48 @@
      "jumps": 0,
      "person_kept": null,
      "reversals_per_min": 0.0,
-     "zoom_p95": 0.56
+     "zoom_p95": 1.0
     },
     "2:3": {
+     "caption_cut_rate": null,
+     "face_cut_rate": null,
+     "jerk_p95": 0.0,
+     "jumps": 0,
+     "person_kept": null,
+     "reversals_per_min": 0.0,
+     "zoom_p95": 1.0
+    }
+   }
+  },
+  "syn/blurred_bars_tall": {
+   "analysis": {
+    "duration": 4.0,
+    "picture_iou": 1.0,
+    "seconds": 3.9,
+    "transition_f1": 1.0,
+    "transition_found": 0,
+    "transition_truth": 0
+   },
+   "plans": {
+    "1:1": {
+     "caption_cut_rate": null,
+     "face_cut_rate": null,
+     "jerk_p95": 0.0,
+     "jumps": 0,
+     "person_kept": null,
+     "reversals_per_min": 0.0,
+     "zoom_p95": 1.0
+    },
+    "2:3": {
+     "caption_cut_rate": null,
+     "face_cut_rate": null,
+     "jerk_p95": 0.0,
+     "jumps": 0,
+     "person_kept": null,
+     "reversals_per_min": 0.0,
+     "zoom_p95": 0.67
+    },
+    "9:16": {
      "caption_cut_rate": null,
      "face_cut_rate": null,
      "jerk_p95": 0.0,
@@ -238,7 +523,7 @@
     "duration": 6.0,
     "picture_iou": 1.0,
     "recall_cut": 1.0,
-    "seconds": 1.8,
+    "seconds": 2.2,
     "transition_f1": 1.0,
     "transition_found": 2,
     "transition_truth": 2
@@ -277,10 +562,10 @@
    "analysis": {
     "duration": 5.0,
     "picture_iou": 1.0,
-    "recall_dissolve": 0.0,
-    "seconds": 1.6,
-    "transition_f1": 0.0,
-    "transition_found": 0,
+    "recall_dissolve": 1.0,
+    "seconds": 1.7,
+    "transition_f1": 1.0,
+    "transition_found": 1,
     "transition_truth": 1
    },
    "plans": {
@@ -317,10 +602,10 @@
    "analysis": {
     "duration": 5.0,
     "picture_iou": 1.0,
-    "recall_fade": 0.0,
-    "seconds": 1.4,
-    "transition_f1": 0.0,
-    "transition_found": 0,
+    "recall_fade": 1.0,
+    "seconds": 1.8,
+    "transition_f1": 1.0,
+    "transition_found": 1,
     "transition_truth": 1
    },
    "plans": {
@@ -355,9 +640,10 @@
   },
   "syn/pan": {
    "analysis": {
+    "camera_error": 0.0,
     "duration": 5.0,
     "picture_iou": 1.0,
-    "seconds": 1.5,
+    "seconds": 1.7,
     "transition_f1": 1.0,
     "transition_found": 0,
     "transition_truth": 0
@@ -394,9 +680,10 @@
   },
   "syn/zoom": {
    "analysis": {
+    "camera_error": 0.008,
     "duration": 4.0,
     "picture_iou": 1.0,
-    "seconds": 1.2,
+    "seconds": 1.5,
     "transition_f1": 1.0,
     "transition_found": 0,
     "transition_truth": 0

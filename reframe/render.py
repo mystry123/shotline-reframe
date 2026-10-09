@@ -89,6 +89,46 @@ def _blend(a, b, p: float):
     return mix(a[0], b[0]), mix(a[1], b[1]), a[2] + (b[2] - a[2]) * p
 
 
+def _dissolve(seg: dict | None) -> float:
+    tr = (seg or {}).get("transition") or {}
+    return float(tr.get("duration", 0)) if tr.get("type") == "dissolve" else 0.0
+
+
+def _draw_segment(frame: np.ndarray, segments: list[dict], k: int, t: float, pic: dict, W: int, H: int,
+                  out_w: int, out_h: int) -> np.ndarray:
+    """Segment k's framing of `frame` at time t (eased start included)."""
+    seg = segments[k]
+    canvas = np.zeros((out_h, out_w, 3), np.uint8)
+    picture = frame[pic["y"]:pic["y"] + pic["h"], pic["x"]:pic["x"] + pic["w"]]
+    view = _view(seg, t, pic, W, H, out_w / out_h)
+    if view is not None:
+        # One-zone layouts share one model (crop shown in a canvas, maybe over
+        # a blurred copy); an eased start blends from the previous framing.
+        tr = seg.get("transition") or {}
+        ease = tr.get("duration", 0) if tr.get("type") == "ease" else 0
+        if ease and k > 0 and t < seg["start"] + ease:
+            prev = segments[k - 1]
+            before = _view(prev, min(t, prev["end"] - 1e-3), pic, W, H, out_w / out_h)
+            if before is not None:
+                view = _blend(before, view, _ease((t - seg["start"]) / ease))
+        (cl, ct, cw, ch), crop, blur = view
+        if blur > 0:
+            canvas[:] = (_blur_cover(picture, out_w, out_h) * blur).astype(np.uint8)
+        zx, zy = int(round(cl * out_w)), int(round(ct * out_h))
+        zw, zh = max(1, int(round(cw * out_w))), max(1, int(round(ch * out_h)))
+        canvas[zy:zy + zh, zx:zx + zw] = cv2.resize(_crop(frame, *crop), (zw, zh), interpolation=cv2.INTER_CUBIC)
+        return canvas
+    for z in seg["zones"]:
+        c = z["canvas"]
+        zx, zy = int(round(c["left"] * out_w)), int(round(c["top"] * out_h))
+        zw, zh = int(round(c["width"] * out_w)), int(round(c["height"] * out_h))
+        crop = _crop(frame, *_interp(z["keyframes"], t))
+        canvas[zy:zy + zh, zx:zx + zw] = cv2.resize(crop, (zw, zh), interpolation=cv2.INTER_CUBIC)
+    if len(seg["zones"]) == 2:  # thin divider between split zones
+        canvas[out_h // 2 - 1:out_h // 2 + 1] = 0
+    return canvas
+
+
 def render(source: str, result: dict, out_path: str, out_h: int = 720) -> None:
     src = result["source"]
     W, H, fps = src["width"], src["height"], src["fps"]
@@ -114,35 +154,21 @@ def render(source: str, result: dict, out_path: str, out_h: int = 720) -> None:
             break
         frame = np.frombuffer(buf, np.uint8).reshape(H, W, 3)
         t = i / fps
-        seg = next((s for s in segments if s["start"] <= t < s["end"]), segments[-1])
-        canvas = np.zeros((out_h, out_w, 3), np.uint8)
-        picture = frame[pic["y"]:pic["y"] + pic["h"], pic["x"]:pic["x"] + pic["w"]]
-        view = _view(seg, t, pic, W, H, out_w / out_h)
-        if view is not None:
-            # One-zone layouts share one model (crop shown in a canvas, maybe over
-            # a blurred copy); an eased start blends from the previous framing.
-            k = segments.index(seg)
-            ease = (seg.get("transition") or {}).get("duration", 0) if (seg.get("transition") or {}).get("type") == "ease" else 0
-            if ease and k > 0 and t < seg["start"] + ease:
-                prev = segments[k - 1]
-                before = _view(prev, min(t, prev["end"] - 1e-3), pic, W, H, out_w / out_h)
-                if before is not None:
-                    view = _blend(before, view, _ease((t - seg["start"]) / ease))
-            (cl, ct, cw, ch), crop, blur = view
-            if blur > 0:
-                canvas[:] = (_blur_cover(picture, out_w, out_h) * blur).astype(np.uint8)
-            zx, zy = int(round(cl * out_w)), int(round(ct * out_h))
-            zw, zh = max(1, int(round(cw * out_w))), max(1, int(round(ch * out_h)))
-            canvas[zy:zy + zh, zx:zx + zw] = cv2.resize(_crop(frame, *crop), (zw, zh), interpolation=cv2.INTER_CUBIC)
+        k = next((j for j, s in enumerate(segments) if s["start"] <= t < s["end"]), len(segments) - 1)
+        seg = segments[k]
+        draw = lambda j, tt: _draw_segment(frame, segments, j, tt, pic, W, H, out_w, out_h)  # noqa: E731
+        # A dissolve in the source: cross-fade the two framings over its length, centred on the boundary.
+        nxt = segments[k + 1] if k + 1 < len(segments) else None
+        d_next = _dissolve(nxt)
+        d_here = _dissolve(seg)
+        if nxt is not None and d_next and t >= nxt["start"] - d_next / 2:
+            p = (t - (nxt["start"] - d_next / 2)) / d_next
+            canvas = (draw(k, t) * (1 - p) + draw(k + 1, t) * p).astype(np.uint8)
+        elif k > 0 and d_here and t < seg["start"] + d_here / 2:
+            p = 0.5 + (t - seg["start"]) / d_here
+            canvas = (draw(k - 1, t) * (1 - p) + draw(k, t) * p).astype(np.uint8)
         else:
-            for z in seg["zones"]:
-                c = z["canvas"]
-                zx, zy = int(round(c["left"] * out_w)), int(round(c["top"] * out_h))
-                zw, zh = int(round(c["width"] * out_w)), int(round(c["height"] * out_h))
-                crop = _crop(frame, *_interp(z["keyframes"], t))
-                canvas[zy:zy + zh, zx:zx + zw] = cv2.resize(crop, (zw, zh), interpolation=cv2.INTER_CUBIC)
-        if len(seg["zones"]) == 2:  # thin divider between split zones
-            canvas[out_h // 2 - 1:out_h // 2 + 1] = 0
+            canvas = draw(k, t)
         for ov in result.get("overlays", []):
             _overlay_text(canvas, frame, ov)
         writer.stdin.write(canvas.tobytes())  # type: ignore[union-attr]

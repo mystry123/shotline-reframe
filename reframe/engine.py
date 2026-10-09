@@ -21,8 +21,9 @@ from .faces import FaceDetector
 from .content import ContentBox, content_boxes
 from .continuity import setups, transitions, unify
 from .layout import Segment, plan_content, plan_shot, shot_alternatives
+from .motion import estimate as estimate_motion
 from .probe import Rect, VideoInfo, find_picture_area, probe
-from .shots import Shot, detect_shots
+from .shots import Shot, detect_transitions
 from .options import QUALITY, Options
 from .overlays import TextBand, detect_text_bands
 from .speakers import People, Turn, active_person, describe_tracks, group_people, load_turns, map_speakers
@@ -49,11 +50,16 @@ class Analysis:
     # One still (JPEG of the picture area) from the middle of each shot, for
     # the AI director's contact sheets.
     stills: dict[int, bytes] = field(default_factory=dict)
+    # Camera motion of the source between consecutive analysis frames (None at
+    # the first frame of each shot); see motion.py.
+    motion: list = field(default_factory=list)
+    # Cuts, dissolves and fades between shots (shots meet at their middles).
+    transitions: list = field(default_factory=list)
 
 
 # Rough share of analysis time per stage, for progress reporting.
-STAGES = [("probe", "Reading the video", 0.05), ("shots", "Finding cuts", 0.15), ("faces", "Finding faces", 0.25),
-          ("tracks", "Tracking people", 0.05), ("people", "Checking who is a person", 0.35),
+STAGES = [("probe", "Reading the video", 0.05), ("shots", "Finding cuts", 0.15), ("faces", "Finding faces", 0.22),
+          ("motion", "Measuring camera motion", 0.03), ("tracks", "Tracking people", 0.05), ("people", "Checking who is a person", 0.35),
           ("content", "Finding the content and text", 0.1), ("speakers", "Matching voices", 0.05)]
 
 
@@ -84,7 +90,8 @@ def analyze(path: str, words: list[dict] | None = None, quality: str = "standard
     t0 = time.perf_counter()
     stage("shots")
     cut_frames = decode(info, area, fps=info.fps, max_width=320)
-    shots = detect_shots(cut_frames, info.duration)
+    shots, transitions = detect_transitions(cut_frames, info.duration)
+    del cut_frames
     timings["shots"] = time.perf_counter() - t0
 
     t0 = time.perf_counter()
@@ -92,7 +99,18 @@ def analyze(path: str, words: list[dict] | None = None, quality: str = "standard
     q = QUALITY[quality]
     frames = decode(info, area, fps=q["fps"], max_width=q["width"], upscale_to=q["width"])
     faces = FaceDetector().detect(frames)
+    # Blended frames inside a dissolve or fade show ghosts of both shots: no faces there.
+    for tr in transitions:
+        if tr.kind != "cut":
+            for i in range(int(tr.start * frames.fps), min(len(faces), int(np.ceil(tr.end * frames.fps)) + 1)):
+                faces[i] = []
     timings["faces"] = time.perf_counter() - t0
+
+    t0 = time.perf_counter()
+    stage("motion")
+    shot_starts = [int(round(s.start * frames.fps)) for s in shots]
+    motion = estimate_motion(frames, faces, shot_starts)
+    timings["motion"] = time.perf_counter() - t0
 
     t0 = time.perf_counter()
     stage("tracks")
@@ -131,7 +149,8 @@ def analyze(path: str, words: list[dict] | None = None, quality: str = "standard
         ok, jpg = cv2.imencode(".jpg", frames.data[i], [cv2.IMWRITE_JPEG_QUALITY, 85])
         if ok:
             stills[s.index] = jpg.tobytes()
-    return Analysis(info, area, shots, tracks, turns, people, text, content, text_in_picture, quality, q["fps"], timings, stills)
+    return Analysis(info, area, shots, tracks, turns, people, text, content, text_in_picture, quality, q["fps"], timings,
+                    stills, motion, transitions)
 
 
 SCREEN_MIN_BOXES = 15          # a frame with this much small text is a screen (page, app, recording)
@@ -195,8 +214,14 @@ def _caption_band(analysis: "Analysis") -> tuple[float, float, float, float] | N
     return band
 
 
-def _with_transitions(segments: list[dict], cut_times: list[float]) -> list[dict]:
+def _with_transitions(segments: list[dict], cut_times: list[float], between: list | None = None) -> list[dict]:
     transitions(segments, cut_times)
+    # A dissolve in the source: the two framings cross-fade with it, centred on its middle.
+    for tr in between or []:
+        if tr.kind == "dissolve":
+            seg = next((x for x in segments if abs(x["start"] - tr.middle) < 1e-3), None)
+            if seg is not None:
+                seg["transition"] = {"type": "dissolve", "duration": round(tr.end - tr.start, 3)}
     return segments
 
 
@@ -366,7 +391,9 @@ def plan(analysis: Analysis, ratio: str, keep_text: list[str] | None = None,
         "speakers": {spk: {"person": pid, "confidence": round(analysis.people.confidence.get(spk, 0), 2)}
                      for spk, pid in analysis.people.speaker_person.items()},
         "segments": _with_transitions([_to_frame(s, analysis.info, area) for s in segments],
-                                      [s.start for s in analysis.shots[1:]]),
+                                      [s.start for s in analysis.shots[1:]], getattr(analysis, "transitions", [])),
+        "transitions": [{"type": t.kind, "start": round(t.start, 3), "end": round(t.end, 3)}
+                        for t in getattr(analysis, "transitions", []) if t.kind != "cut"],
         "shots": picked,
         # Burned-in captions inside the picture: whether there are any, and with
         # "replace", where they were left out (the backend adds Shotline captions

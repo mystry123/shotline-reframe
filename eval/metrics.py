@@ -172,3 +172,24 @@ def plan_metrics(analysis, plan: dict) -> dict:
         "reversals_per_min": round(reversals / minutes, 2),
         "zoom_p95": round(float(np.percentile(zooms, 95)), 2) if zooms else None,
     }
+
+
+def camera_metrics(analysis, truth: dict) -> dict:
+    """Measured source-camera motion against the synthetic truth: the pan speed
+    (frame widths per second) and the total zoom over the clip."""
+    steps = [m for m in getattr(analysis, "motion", []) if m is not None]
+    if not steps or not truth:
+        return {}
+    out = {}
+    W = analysis.area.w
+    if "pan_px_per_s" in truth:
+        measured = float(np.mean([m.dx for m in steps])) * analysis.fps
+        expected = truth["pan_px_per_s"] / W
+        out["camera_error"] = round(abs(measured - expected) / expected, 3)
+    if "zoom" in truth:
+        measured = float(np.prod([m.scale for m in steps]))
+        frames = len(analysis.motion)
+        lo, hi = truth["zoom"]
+        expected = lo + (hi - lo) * min(1.0, (frames - 1) / analysis.fps / truth["over_s"])
+        out["camera_error"] = round(abs(measured - expected) / (expected - lo), 3)
+    return out
