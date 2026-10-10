@@ -46,6 +46,7 @@ GATES = {
     "camera_error": ("up", 0.05, "abs"),
     "wrong_speaker_rate": ("up", 0.0, "abs"),
     "speaker_answered": ("down", 0.05, "abs"),
+    "blinks": ("up", 0, "abs"),
 }
 REL_FLOOR = {"jerk_p95": 0.5, "reversals_per_min": 1.0}
 ZOOM_WARN = 2.0
