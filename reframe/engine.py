@@ -9,6 +9,7 @@ renderer only has to crop the source; picture-area handling is internal.
 
 from __future__ import annotations
 
+import os
 import time
 
 import cv2
@@ -22,6 +23,7 @@ from .persons import join_bodies
 from .faces import FaceDetector
 from .content import ContentBox, content_boxes
 from .continuity import setups, transitions, unify
+from .smoothing import Context as SmoothingContext, smooth
 from .layout import Segment, plan_content, plan_shot, shot_alternatives
 from .motion import estimate as estimate_motion
 from .probe import Rect, VideoInfo, find_picture_area, probe
@@ -519,6 +521,11 @@ def plan(analysis: Analysis, ratio: str, keep_text: list[str] | None = None,
                        "options": list(opts), "setup": items[setup_of[pos][0]]["shot"].index})
     # One framing per setup: no resizing at the jump cuts of a talking head.
     unify(groups, picked_segs, target, area.w / area.h)
+    # No blink of another layout between cuts (a short shot over a blurred
+    # background between two crops, or the other way round): see smoothing.
+    if os.environ.get("REFRAME_SMOOTHING", "on") != "off":   # "off": compare without it (eval)
+        smooth(SmoothingContext(analysis, target, area.w / area.h, lambda s: _shot_text(analysis, s),
+                                lambda s: picture_captions(analysis, s)), items, picked_segs, picked)
     segments = [seg for segs in picked_segs for seg in segs]
     return {
         "engine": ENGINE_VERSION,

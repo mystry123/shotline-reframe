@@ -112,6 +112,7 @@ def picture_iou(analysis, truth: dict) -> float:
 
 
 def plan_metrics(analysis, plan: dict) -> dict:
+    from reframe.smoothing import blinks
     W, H = analysis.info.width, analysis.info.height
     area = analysis.area
     views = _views(plan)
@@ -179,6 +180,9 @@ def plan_metrics(analysis, plan: dict) -> dict:
         "jerk_p95": round(float(np.percentile(jerks, 95)), 3) if jerks else 0.0,
         "reversals_per_min": round(reversals / minutes, 2),
         "zoom_p95": round(float(np.percentile(zooms, 95)), 2) if zooms else None,
+        # Layouts shown for under ISLAND_S between other layouts (the blurred
+        # background blinking in and out): smoothing drives this to zero
+        "blinks": blinks(plan["segments"]),
     }
 
 
