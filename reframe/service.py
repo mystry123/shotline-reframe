@@ -15,7 +15,10 @@ downloaded only from REFRAME_ALLOWED_HOSTS, without following redirects.
 
 Environment:
     REFRAME_SERVICE_TOKEN   shared secret (required unless REFRAME_DEV=1)
-    REFRAME_ALLOWED_HOSTS   comma-separated hostnames videos may come from
+    REFRAME_ALLOWED_HOSTS   comma-separated hosts videos may come from; an entry
+                            may add a path prefix, host/prefix, to allow only
+                            part of a shared host (a Google Cloud Storage
+                            bucket: storage.googleapis.com/shotline-media-prod)
     REFRAME_CACHE_DIR       where analyses are kept (default ./cache)
     REFRAME_WORKERS         analyses run at the same time (default 1)
     REFRAME_MAX_BYTES       largest video accepted (default 4 GB)
@@ -37,7 +40,7 @@ import traceback
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlparse
+from urllib.parse import unquote, urlparse
 
 import httpx
 from fastapi import FastAPI, Header, HTTPException
@@ -50,7 +53,21 @@ from .options import OUTPUT_HEIGHTS, QUALITY, ZOOM, Options
 
 TOKEN = os.environ.get("REFRAME_SERVICE_TOKEN", "")
 DEV = os.environ.get("REFRAME_DEV") == "1"
-ALLOWED_HOSTS = {h.strip().lower() for h in os.environ.get("REFRAME_ALLOWED_HOSTS", "").split(",") if h.strip()}
+
+
+def _parse_allowed(raw: str) -> set[tuple[str, str | None]]:
+    """`host` or `host/path/prefix` entries → {(host, prefix or None)}."""
+    allowed: set[tuple[str, str | None]] = set()
+    for entry in raw.split(","):
+        entry = entry.strip().lower().rstrip("/")
+        if not entry:
+            continue
+        host, _, prefix = entry.partition("/")
+        allowed.add((host, prefix or None))
+    return allowed
+
+
+ALLOWED_HOSTS = _parse_allowed(os.environ.get("REFRAME_ALLOWED_HOSTS", ""))
 CACHE_DIR = Path(os.environ.get("REFRAME_CACHE_DIR", "cache")).resolve()
 WORKERS = int(os.environ.get("REFRAME_WORKERS", "1"))
 MAX_BYTES = int(os.environ.get("REFRAME_MAX_BYTES", str(4 * 1024**3)))
@@ -99,8 +116,20 @@ def _check_url(url: str) -> None:
         raise HTTPException(400, "videoUrl must be an http(s) URL")
     if parsed.scheme == "http" and not DEV:
         raise HTTPException(400, "videoUrl must use https")
-    if ALLOWED_HOSTS and parsed.hostname.lower() not in ALLOWED_HOSTS:
+    if ALLOWED_HOSTS and not _url_allowed(parsed.hostname, parsed.path, ALLOWED_HOSTS):
         raise HTTPException(400, f"videoUrl host {parsed.hostname} is not allowed")
+
+
+def _url_allowed(hostname: str, path: str, allowed: set[tuple[str, str | None]]) -> bool:
+    host = hostname.lower()
+    if (host, None) in allowed:
+        return True
+    # Prefix entries: the decoded path must start with /<prefix>/ and hold no
+    # dot segments or encoded slashes that could step out of it.
+    decoded = unquote(path)
+    if "%2f" in path.lower() or any(seg in (".", "..") for seg in decoded.split("/")):
+        return False
+    return any(h == host and p is not None and decoded.lower().startswith(f"/{p}/") for h, p in allowed)
 
 
 def _analysis_id(req: AnalysisRequest) -> str:

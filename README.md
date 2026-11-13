@@ -25,7 +25,7 @@ Plan and quality targets: "Reframe Engine v2" (Shotline plan page, 8 Oct 2026).
 ## Service
 
 ```bash
-REFRAME_SERVICE_TOKEN=… REFRAME_ALLOWED_HOSTS=cdn.example.com,bucket.s3.amazonaws.com \
+REFRAME_SERVICE_TOKEN=… REFRAME_ALLOWED_HOSTS=cdn.example.com,storage.googleapis.com/my-bucket \
   .venv/bin/uvicorn reframe.service:app --port 8090
 ```
 
